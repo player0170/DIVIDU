@@ -5,6 +5,7 @@ import { createPlanner } from './planner.js?v=0.5.0';
 import { createWorkbench } from './workbench.js?v=0.5.0';
 import { createMessagePlans } from './message-plans.js?v=0.5.0';
 import { createGenerationBinding } from './generation-binding.js?v=0.5.0';
+import { createTheater } from './theater.js?v=0.5.0';
 import { migrateSchemes } from '../planning/schemes.js?v=0.5.0';
 import { CHANNEL, acceptsMessage, validateRpc, themeSnapshot } from '../bridge/protocol.js?v=0.5.0';
 const ID='czgh_external_planner';
@@ -21,18 +22,23 @@ function init(){
     const send=(type,payload)=>frame.contentWindow?.postMessage({channel:CHANNEL,type,payload},location.origin);
     const theme=()=>themeSnapshot(getComputedStyle(document.body));
     const workbench=createWorkbench({context:ctx,headers:getRequestHeaders,saveSettings});
-    const panelFrames=new Map();
-    const plans=createMessagePlans({chatId,messages:()=>ctx().chat||[],save:()=>ctx().saveChat(),display:()=>!!ctx().extensionSettings[ID]?.displayPlan,render:records=>{
-        for(const [id,item] of panelFrames)if(!records.some(r=>r.messageId===id)||!item.frame.isConnected){item.frame.remove();panelFrames.delete(id);}
+    const panelFrames=new Map(),theaterFrames=new Map();
+    // Floor iframes share one document; `type` tells it whether to show a plan or a theater record.
+    const syncFrames=(frames,records,title,type)=>{
+        for(const [id,item] of frames)if(!records.some(r=>r.messageId===id)||!item.frame.isConnected){item.frame.remove();frames.delete(id);}
         for(const record of records){
             const parent=document.querySelector(`.mes[mesid="${record.messageId}"] .mes_block`);if(!parent)continue;
-            let item=panelFrames.get(record.messageId);
-            if(!item){const panel=document.createElement('iframe');panel.title='本楼创作规划';panel.src=new URL('../ui/message.html?v=0.5.0',import.meta.url).href;panel.style.cssText='display:block!important;width:100%!important;height:42px!important;border:0!important;margin:8px 0!important;background:transparent!important;';parent.append(panel);item={frame:panel,record};panelFrames.set(record.messageId,item);panel.addEventListener('load',()=>panel.contentWindow?.postMessage({channel:CHANNEL,type:'plan',payload:{record:item.record,theme:theme(),appearance:ctx().extensionSettings[ID]?.appearance||'auto'}},location.origin));}
+            let item=frames.get(record.messageId);
+            const payload=()=>({record:item.record,theme:theme(),appearance:ctx().extensionSettings[ID]?.appearance||'auto'});
+            if(!item){const panel=document.createElement('iframe');panel.title=title;panel.src=new URL('../ui/message.html?v=0.5.0',import.meta.url).href;panel.style.cssText='display:block!important;width:100%!important;height:42px!important;border:0!important;margin:8px 0!important;background:transparent!important;';parent.append(panel);item={frame:panel,record};frames.set(record.messageId,item);panel.addEventListener('load',()=>panel.contentWindow?.postMessage({channel:CHANNEL,type,payload:payload()},location.origin));}
             item.record=record;
-            const deliver=()=>{item.timer=null;if(item.frame.isConnected)item.frame.contentWindow?.postMessage({channel:CHANNEL,type:'plan',payload:{record:item.record,theme:theme(),appearance:ctx().extensionSettings[ID]?.appearance||'auto'}},location.origin);};
+            const deliver=()=>{item.timer=null;if(item.frame.isConnected)item.frame.contentWindow?.postMessage({channel:CHANNEL,type,payload:payload()},location.origin);};
             if(record.phase==='streaming'){if(!item.timer)item.timer=setTimeout(deliver,60);}else{clearTimeout(item.timer);deliver();}
         }
-    }});
+    };
+    const allFrames=()=>[...panelFrames.values(),...theaterFrames.values()];
+    const plans=createMessagePlans({chatId,messages:()=>ctx().chat||[],save:()=>ctx().saveChat(),display:()=>!!ctx().extensionSettings[ID]?.displayPlan,render:records=>syncFrames(panelFrames,records,'本楼创作规划','plan')});
+    const theater=createTheater({getContext:ctx,getRequestHeaders,resolveRequest:args=>workbench.theaterRequest(args),save:()=>ctx().saveChat(),chatId,isAborted:()=>!!ctx().streamingProcessor?.abortController?.signal?.aborted,render:records=>syncFrames(theaterFrames,records,'本楼小剧场','theater')});
     const binding=createGenerationBinding({identity:chatId,isAborted:()=>!!ctx().streamingProcessor?.abortController?.signal?.aborted,discard:id=>plans.discard(id),bind:async(record,messageId)=>{
         const message=ctx().chat?.[messageId];if(!message)return;
         await plans.bind({requestId:record.requestId,messageId,swipeId:message.swipe_id??0});
@@ -45,13 +51,15 @@ function init(){
     ctx().extensionSettings[ID]=migrateSchemes(ctx().extensionSettings[ID]);
     let rpcQueue=Promise.resolve();
     window.addEventListener('message',event=>{
-        const knownFrame=acceptsMessage(event,frame.contentWindow,location.origin)||[...panelFrames.values()].some(item=>acceptsMessage(event,item.frame.contentWindow,location.origin));
+        const knownFrame=acceptsMessage(event,frame.contentWindow,location.origin)||allFrames().some(item=>acceptsMessage(event,item.frame.contentWindow,location.origin));
         if(knownFrame&&event.data.type==='resume'){const item=[...panelFrames.values()].find(x=>x.frame.contentWindow===event.source);if(!item||(item.record.phase==='awaiting'&&item.record.chatId===chatId()))planner.resume();return;}
+        if(knownFrame&&event.data.type==='theater.generate'){const item=[...theaterFrames.values()].find(x=>x.frame.contentWindow===event.source);if(item&&item.record.chatId===chatId()&&!theater.busy(item.record.phase))void theater.generate(item.record.messageId);else theater.render();return;}
+        for(const item of theaterFrames.values())if(acceptsMessage(event,item.frame.contentWindow,location.origin)&&event.data.type==='cancel'){theater.cancel();return;}
         if(knownFrame&&event.data.type==='appearance'){
             rpcQueue=rpcQueue.then(async()=>{
                 const mode={auto:'light',light:'dark',dark:'auto'}[ctx().extensionSettings[ID]?.appearance||'auto'];
                 ctx().extensionSettings[ID].appearance=mode;await saveSettings();send('appearance',mode);
-                for(const item of panelFrames.values())item.frame.contentWindow?.postMessage({channel:CHANNEL,type:'appearance',payload:mode},location.origin);
+                for(const item of allFrames())item.frame.contentWindow?.postMessage({channel:CHANNEL,type:'appearance',payload:mode},location.origin);
             }).catch(error=>send('state',{...planner.getState(),status:error.message}));return;
         }
         // Closing must not wait for source loading or any pending RPC operation.
@@ -60,7 +68,7 @@ function init(){
         for(const item of panelFrames.values())if(acceptsMessage(event,item.frame.contentWindow,location.origin)&&event.data.type==='cancel'){
             if(item.record.chatId===chatId()&&['waiting','preparing','streaming','awaiting'].includes(item.record.phase)){if(item.record.phase==='waiting')stopGeneration();planner.stop();binding.stopped();plans.settleWaiting('cancelled');}return;
         }
-        for(const item of panelFrames.values())if(acceptsMessage(event,item.frame.contentWindow,location.origin)&&event.data.type==='height'){
+        for(const item of allFrames())if(acceptsMessage(event,item.frame.contentWindow,location.origin)&&event.data.type==='height'){
             const height=Number(event.data.payload);if(Number.isFinite(height))item.frame.style.setProperty('height',`${Math.min(560,Math.max(42,height))}px`,'important');return;
         }
         if(!acceptsMessage(event,frame.contentWindow,location.origin)||event.data.type!=='request')return;
@@ -69,7 +77,7 @@ function init(){
             try{const {method,payload}=validateRpc(event.data);let result;
                 if(method==='ui.close'){dialog.close();result={};}
                 else if(method==='planner.cancel'){planner.stop();binding.stopped();result={};}
-                else{result=await workbench.execute(method,payload);planner.settingsChanged();plans.render();}
+                else{result=await workbench.execute(method,payload);planner.settingsChanged();theater.settingsChanged();plans.render();}
                 frame.contentWindow?.postMessage({channel:CHANNEL,type:'response',requestId,ok:true,result},location.origin);send('theme',theme());send('state',{...planner.getState(),busy:planner.isPlanning()});
             }catch(error){frame.contentWindow?.postMessage({channel:CHANNEL,type:'response',requestId,ok:false,error:error.message},location.origin);}
         });
@@ -87,19 +95,19 @@ function init(){
     // Some extensions await API work inside native event listeners. Observe inserted floors too.
     new MutationObserver(changes=>{
         if(!changes.some(c=>[...c.addedNodes].some(n=>n.nodeType===1&&(n.matches('.mes')||n.querySelector('.mes')))))return;
-        if(observedChat!==chatId()){observedChat=chatId();for(const message of ctx().chat||[])announced.add(message);plans.render();return;}
+        if(observedChat!==chatId()){observedChat=chatId();for(const message of ctx().chat||[])announced.add(message);plans.render();theater.render();return;}
         const id=(ctx().chat?.length||0)-1;
         if(document.querySelector(`.mes[mesid="${id}"]`))announceUser(id);
-        plans.render();
+        plans.render();theater.render();
     }).observe(document.body,{childList:true,subtree:true});
-    on('MESSAGE_RECEIVED',(messageId,type)=>binding.received(messageId,type));
-    on('GENERATION_STARTED',()=>{busy=true;send('state',{...planner.getState(),busy:planner.isPlanning()});binding.started();});
+    on('MESSAGE_RECEIVED',(messageId,type)=>{binding.received(messageId,type);theater.received(messageId,type);});
+    on('GENERATION_STARTED',(type,_options,dryRun)=>{busy=true;send('state',{...planner.getState(),busy:planner.isPlanning()});binding.started();theater.generationStarted(type,dryRun);});
     on('GENERATION_STOPPED',()=>{busy=false;send('state',{...planner.getState(),busy:planner.isPlanning()});binding.stopped();plans.settleWaiting('cancelled');});
     on('GENERATION_ENDED',()=>{busy=false;send('state',{...planner.getState(),busy:planner.isPlanning()});binding.ended();plans.settleWaiting('skipped');plans.render();});
-    on('CHAT_CHANGED',()=>{binding.stopped();plans.dispose();plans.render();if(dialog.open)send('refresh');});
-    on('MESSAGE_SWIPED',()=>plans.clearLive());
-    for(const event of ['CHARACTER_MESSAGE_RENDERED','MESSAGE_UPDATED','MESSAGE_DELETED','CHAT_LOADED'])on(event,()=>plans.render());
-    let previous='';setInterval(()=>{const value=theme(),json=JSON.stringify(value);if(json===previous)return;previous=json;if(dialog.open)send('theme',value);for(const item of panelFrames.values())item.frame.contentWindow?.postMessage({channel:CHANNEL,type:'theme',payload:value},location.origin);},800);
-    plans.render();
+    on('CHAT_CHANGED',()=>{binding.stopped();plans.dispose();plans.render();theater.chatChanged();if(dialog.open)send('refresh');});
+    on('MESSAGE_SWIPED',()=>{plans.clearLive();theater.render();});
+    for(const event of ['CHARACTER_MESSAGE_RENDERED','MESSAGE_UPDATED','MESSAGE_EDITED','MESSAGE_DELETED','CHAT_LOADED'])on(event,()=>{plans.render();theater.render();});
+    let previous='';setInterval(()=>{const value=theme(),json=JSON.stringify(value);if(json===previous)return;previous=json;if(dialog.open)send('theme',value);for(const item of allFrames())item.frame.contentWindow?.postMessage({channel:CHANNEL,type:'theme',payload:value},location.origin);},800);
+    plans.render();theater.render();
 }
 ctx().eventSource.on(ctx().eventTypes.APP_READY,init);init();

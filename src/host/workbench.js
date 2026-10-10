@@ -69,6 +69,7 @@ export function createWorkbench({ context, headers, saveSettings }) {
                 if (typeof payload.displayPlan === 'boolean') state.displayPlan = payload.displayPlan;
                 if (['auto','light','dark'].includes(payload.appearance)) state.appearance = payload.appearance;
                 if (typeof payload.apiSelection === 'string' && (await api.list()).some(p => p.id === payload.apiSelection)) state.apiSelection = payload.apiSelection;
+                if (typeof payload.theaterApiSelection === 'string' && (payload.theaterApiSelection === '' || (await api.list()).some(p => p.id === payload.theaterApiSelection && p.origin !== 'current'))) state.theaterApiSelection = payload.theaterApiSelection;
                 await write(state);
             } else if (method === 'selection.update') {
                 assertSafeData(payload);
@@ -121,6 +122,19 @@ export function createWorkbench({ context, headers, saveSettings }) {
                 }
             } else if (method === 'scheme.remove') await write(applySchemeOperation(state, { kind: payload.kind, operation: 'delete', id: payload.id }));
             return snapshot();
+        },
+        // Theater runs after the body, so the frozen current connection is unavailable; only saved schemes are used.
+        async theaterRequest({ selection, maxTokens, signal }) {
+            if (!selection) throw new Error('请先在设置中选择小剧场 API 方案。');
+            if (selection === 'current') throw new Error('小剧场需使用独立 API 方案，请选择预设编辑器方案或本地方案。');
+            const profile = await api.resolve(selection);
+            const request = profileRequest(profile, [], maxTokens, parseYaml);
+            if (profile.keyRef) return authorizeLocalRequest(request, await vault.get(profile.keyRef), parseYaml);
+            const response = await fetch('/api/secrets/read', { method: 'POST', headers: headers(), body: '{}', signal });
+            if (!response.ok) throw new Error('无法核对小剧场方案的密钥引用。');
+            const keys = (await response.json()).api_key_custom;
+            if (!Array.isArray(keys) || !keys.some(item => item.id === profile.secretId)) throw new Error('小剧场方案引用的密钥已不存在；未使用其他密钥。');
+            return request;
         },
         async prepare({ data, config, signal }) {
             const state = migrateSchemes(config);

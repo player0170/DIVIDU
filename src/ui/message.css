@@ -16,3 +16,7 @@ summary{padding-right:78px}#appearance{position:absolute;right:40px;top:3px;widt
 
 /* 手动正文入口与外观按钮独立于展开操作。 */
 summary{padding-right:114px}#appearance{right:76px}#resume{position:absolute;right:40px;top:3px;width:34px;height:32px;border:0;border-radius:7px;background:transparent;color:inherit;cursor:pointer}#resume:disabled{opacity:.25;cursor:default}
+
+/* 小剧场楼内入口复用同一文档：生成按钮占据手动正文按钮的位置，正文文本按普通段落显示。 */
+#theater{position:absolute;right:40px;top:3px;width:34px;height:32px;border:0;border-radius:7px;background:transparent;color:inherit;cursor:pointer}#theater:hover,#resume:hover{background:#80808022}#theater:disabled{opacity:.25;cursor:default}#theater[hidden],#resume[hidden]{display:none}
+body.theater pre{font-family:var(--mainFontFamily,Arial,sans-serif);font-size:13px}

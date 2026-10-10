@@ -10,6 +10,7 @@ const shapes = {
     light: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M5 19l1.5-1.5M17.5 6.5 19 5"/>',
     dark: '<path d="M20 14A8.5 8.5 0 0 1 10 3a8.5 8.5 0 1 0 10 11Z"/>',
     auto: '<path d="M5 19c-4-9 5-12 14-15 1 10-2 17-10 16M4 22l11-12M8 15l5 1"/>',
+    theater: '<path d="M12 3.5 14 9.5l6 .5-4.6 3.9 1.5 6.1L12 16.8 7.1 20l1.5-6.1L4 10l6-.5z"/>',
 };
 export function setIcon(node, name) {
     if (!shapes[name]) return;

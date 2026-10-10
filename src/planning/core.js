@@ -13,6 +13,11 @@ export const defaults = Object.freeze({
     openTag: '',
     closeTag: '',
     rules: '[]',
+    theaterEnabled: false,
+    theaterAutoGenerate: true,
+    theaterStream: false,
+    theaterMaxTokens: 2000,
+    theaterHistory: 6,
     plannerInstruction: '你正在参与一次分阶段的协作写作。本轮由你完成当前预设要求的写作准备和创作规划，随后会由写作同事结合原始资料与你的规划完成正文及其他要求的成品。请沿用预设指定的身份、语言和创作方式。',
     writerInstruction: '你的规划同事已经完成了本轮写作准备，以下是供你接续使用的创作规划。请结合原始上下文、用户最新输入及当前预设，继续完成正文和预设要求的其他成品，无需重新输出规划区块。',
 });
@@ -37,6 +42,7 @@ const writingGuidance = `将规划中的安排落实到创作中，同时继续�
 export const promptDefaults = Object.freeze({
     plannerPrompt: `${defaults.plannerInstruction}\n${planningGuidance}`,
     writerPrompt: `${defaults.writerInstruction}\n${writingGuidance}`,
+    theaterPrompt: '本轮正文已经完成。请根据下方提供的角色资料、最近聊天和本轮正文，写一段简短的番外小剧场，例如幕后花絮、角色内心吐槽、平行时空或 Q 版短剧。贴合角色性格与说话方式；不续写、不改写正文剧情，小剧场内容不视为已发生的事实；篇幅约 200–500 字。只输出小剧场本身，不输出正文、状态栏、规划或额外说明。',
 });
 
 // Conservative recognition of explicit format instructions, not past assistant output.
@@ -92,6 +98,7 @@ export function migrateSettings(saved = {}) {
     if (typeof saved.plannerPrompt !== 'string') merged.plannerPrompt = `${merged.plannerInstruction}\n${planningGuidance}`;
     if (saved.plannerPrompt === `${defaults.plannerInstruction}\n${previousPlanningGuidance}`) merged.plannerPrompt = promptDefaults.plannerPrompt;
     if (typeof saved.writerPrompt !== 'string') merged.writerPrompt = `${merged.writerInstruction}\n${writingGuidance}`;
+    if (typeof saved.theaterPrompt !== 'string') merged.theaterPrompt = promptDefaults.theaterPrompt;
     return merged;
 }
 

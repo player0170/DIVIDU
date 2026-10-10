@@ -51,6 +51,7 @@ export function createApiSchemes(host) {
                 const oldRef = previous.schemes.api.find(p => p.id === localId(id))?.payload.keyRef;
                 const next = applySchemeOperation(previous, { kind: 'api', operation: 'delete', id: localId(id) });
                 if (next.apiSelection === id) next.apiSelection = '';
+                if (next.theaterApiSelection === id) next.theaterApiSelection = '';
                 await host.write(next);
                 await release(oldRef, next);
             });

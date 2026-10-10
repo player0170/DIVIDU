@@ -24,6 +24,7 @@ export function migrateSchemes(settings = {}) {
         result.schemeBaseline[kind] ??= selectionPayload(result, kind);
     }
     result.apiSelection ??= result.profileId ? `external:${result.profileId}` : result.schemes.api.length ? 'local:legacy-manual' : 'current';
+    result.theaterApiSelection ??= '';
     result.displayPlan ??= false;
     result.appearance ??= 'auto';
     return result;
