@@ -1,8 +1,12 @@
-/* 规划消息持久化：按聊天与 swipe 绑定记录，不改变正文，不复用取消或过期结果。 */
+/* 规划消息持久化：按聊天与 swipe 绑定记录，把规划块写到正文前方，不复用取消或过期结果。 */
 export function fingerprint(text) {
     let hash = 2166136261;
     for (const char of String(text || '')) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
     return `${String(text || '').length}:${hash >>> 0}`;
+}
+export function planBlock(record) {
+    if (!record?.text || !record.openTag || !record.closeTag) return '';
+    return `${record.openTag}\n${record.text}\n${record.closeTag}`;
 }
 export function createMessagePlans(host) {
     const pending = new Map();
@@ -41,6 +45,12 @@ export function createMessagePlans(host) {
             const message = host.messages()[messageId];
             if (!record || record.chatId !== host.chatId() || !message || message.is_user || message.is_system || !message.mes) return;
             record.swipeId = swipeId;
+            // Plain text in front of the body, like a preset's own reasoning block; ST regex scripts apply as usual.
+            const block = planBlock(record);
+            if (block && !message.mes.startsWith(block)) {
+                message.mes = `${block}\n\n${message.mes}`;
+                if (Array.isArray(message.swipes) && typeof message.swipes[swipeId] === 'string') message.swipes[swipeId] = message.mes;
+            }
             record.bodyFingerprint = fingerprint(message.mes);
             delete record.nextWorldState;
             message.extra ??= {};
@@ -50,7 +60,7 @@ export function createMessagePlans(host) {
                 message.swipe_info[swipeId].extra ??= {};
                 message.swipe_info[swipeId].extra.czghCreativePlanning = structuredClone(message.extra.czghCreativePlanning);
             }
-            await host.save(); render();
+            await host.save(); host.refresh?.(messageId); render();
         },
         render,
         discard(requestId) { if (requestId) pending.delete(requestId); else pending.clear(); render(); },

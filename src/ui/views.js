@@ -51,14 +51,14 @@ export function renderView(root, state, ui, act) {
         const syntax=el('div','section-body');
         syntax.append(check('EJS 模板兼容（ST-Prompt-Template）',s.templateCompat,v=>act('settings.update',{templateCompat:v})),el('p','hint','按已安装模板插件执行 EJS；模板中的脚本可能修改变量。不会自动执行 MVU 生成后回写。'));
         root.append(section('提示词语法',syntax,true));
-        const display=el('div','section-body');display.append(check('在用户消息下显示规划',s.displayPlan,v=>act('settings.update',{displayPlan:v})));root.append(section('显示设置',display));
+        const display=el('div','section-body');display.append(check('在用户消息下显示规划状态条',s.displayPlan,v=>act('settings.update',{displayPlan:v})),el('p','hint','规划和小剧场本身会直接写进回复正文（规划在前、小剧场在后），按酒馆正则正常美化；状态条只显示进度、错误和按钮。'));root.append(section('显示设置',display));
         const theater=el('div','section-body');
-        theater.append(check('启用小剧场',s.theaterEnabled,v=>act('settings.update',{theaterEnabled:v})),el('p','hint','正文完成后用独立 API 再请求一次番外小剧场，显示在回复楼层下方；只写入该回复的附加数据，不进入正文，也不加入后续上下文。'));
-        const theaterProfiles=state.profiles.filter(p=>p.origin!=='current');
+        theater.append(check('启用小剧场',s.theaterEnabled,v=>act('settings.update',{theaterEnabled:v})),el('p','hint','正文完成后再请求一段番外小剧场，直接追加在该回复正文末尾，和酒馆自己生成的文字一样走正则美化；是否进入后续上下文由你的酒馆正则决定。'));
+        const theaterProfiles=state.profiles;
         const theaterOptions=[{id:'',name:'请选择小剧场 API 方案'},...(s.theaterApiSelection&&!theaterProfiles.some(p=>p.id===s.theaterApiSelection)?[{id:s.theaterApiSelection,name:'原方案不可用，请重新选择'}]:[]),...theaterProfiles.map(p=>({id:p.id,name:`${p.origin==='local'?'本地 · ':''}${p.name}`}))];
-        const theaterBar=el('div','scheme-bar');theaterBar.append(el('span','muted','方案'),select('小剧场 API 方案',theaterOptions,s.theaterApiSelection||'',v=>act('settings.update',{theaterApiSelection:v})));theater.append(theaterBar,el('p','hint','小剧场在正文结束后发出，不能使用酒馆当前连接；可在通用设置中新建本地方案后在此选择。'));
+        const theaterBar=el('div','scheme-bar');theaterBar.append(el('span','muted','方案'),select('小剧场 API 方案',theaterOptions,s.theaterApiSelection||'',v=>act('settings.update',{theaterApiSelection:v})));theater.append(theaterBar,el('p','hint','「酒馆当前连接」复用本轮正文请求的连接与模型；也可选预设编辑器方案或通用设置中新建的本地方案。'));
         const theaterNumbers=el('div','two-fields');theaterNumbers.append(field('小剧场最大输出',s.theaterMaxTokens,v=>act('settings.update',{theaterMaxTokens:v}),'number'),field('参考最近楼层数',s.theaterHistory,v=>act('settings.update',{theaterHistory:v}),'number'));theater.append(theaterNumbers);
-        theater.append(check('正文完成后自动生成小剧场',s.theaterAutoGenerate,v=>act('settings.update',{theaterAutoGenerate:v})),check('流式输出小剧场',s.theaterStream,v=>act('settings.update',{theaterStream:v})));
+        theater.append(check('正文完成后自动生成小剧场',s.theaterAutoGenerate,v=>act('settings.update',{theaterAutoGenerate:v})),el('p','hint','关闭后由用户消息下状态条里的小剧场按钮手动触发；该模式下状态条会自动显示。'),check('流式输出小剧场',s.theaterStream,v=>act('settings.update',{theaterStream:v})));
         {
             const key='theaterPrompt',title='小剧场提示词',description='发送给小剧场 API 的引导。角色资料、最近聊天和本轮正文由插件自动附加，无需填写宏。修改后点击完成保存；恢复默认仅替换当前草稿。';
             const value=s[key]??promptDefaults[key];

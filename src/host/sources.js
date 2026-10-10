@@ -35,7 +35,10 @@ export async function captureSources(host, { signal, extraBooks = [], generation
         if (!data?.entries) throw new Error(`无法读取世界书「${name}」。`);
         Object.defineProperty(books, name, { value: structuredClone(data), enumerable: true });
     }
-    const history = (context.chat || []).filter(m => !m.is_system).map(m => ({ role: m.is_user ? 'user' : 'assistant', content: structuredClone(m.content ?? m.mes ?? ''), name: m.name, extra: structuredClone(m.extra || {}) }));
+    // Text history goes through the same prompt-side regex scripts ST applies, so hidden blocks stay hidden here too.
+    const chat = context.chat || [];
+    const history = await Promise.all(chat.map(async (m, i) => m.is_system ? null : ({ role: m.is_user ? 'user' : 'assistant', content: m.content != null ? structuredClone(m.content) : host.promptText ? await host.promptText(m.mes ?? '', m, chat.length - 1 - i) : (m.mes ?? ''), name: m.name, extra: structuredClone(m.extra || {}) }))).then(items => items.filter(Boolean));
+    check();
     // ST retains the replaced floor for swipe, but has already removed it for regenerate.
     if (generationType === 'swipe' && history.at(-1)?.role === 'assistant') history.pop();
     const injections = Object.fromEntries(Object.entries(context.extensionPrompts || {}).map(([key,p]) => [key,{value:String(p.value || ''),position:p.position,depth:p.depth,role:p.role,scan:!!p.scan,hasFilter:typeof p.filter==='function'}]));

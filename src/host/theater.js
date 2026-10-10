@@ -1,11 +1,11 @@
-/* 小剧场控制器：正文收到后用独立 API 方案再请求一次，按 swipe 写入 extra，不改写正文、不进入后续上下文。 */
+/* 小剧场控制器：正文收到后用所选 API 方案再请求一次，结果追加到正文末尾并按 swipe 记录在 extra。 */
 import { readPlanResponse } from './stream.js?v=0.5.0';
 import { createId } from '../bridge/id.js?v=0.5.0';
 import { fingerprint } from './message-plans.js?v=0.5.0';
-import { theaterMessages, extractTheater, validateTheater } from '../planning/theater.js?v=0.5.0';
+import { theaterMessages, extractTheater, validateTheater, bodyOnly } from '../planning/theater.js?v=0.5.0';
 const ID = 'czgh_external_planner';
 const BUSY = ['preparing', 'generating', 'streaming'];
-export function createTheater({ getContext, getRequestHeaders, resolveRequest, save, chatId, isAborted = () => false, render = () => {} }) {
+export function createTheater({ getContext, getRequestHeaders, resolveRequest, save, chatId, isAborted = () => false, render = () => {}, refresh = () => {}, promptText = async text => text }) {
     let run = null;
     let failure = null; // Errors and cancellations stay on the current page only.
     const settings = () => getContext().extensionSettings[ID] || {};
@@ -45,18 +45,27 @@ export function createTheater({ getContext, getRequestHeaders, resolveRequest, s
         const alive = () => run === current && current.chatId === chatId() && getContext().chat?.[messageId] === message && (message.swipe_id ?? 0) === current.swipeId;
         try {
             validateTheater(config);
-            const messages = theaterMessages({ chat: c.chat, messageId, prompt: config.theaterPrompt, history: config.theaterHistory, charName: c.name2, userName: c.name1, character: c.characters?.[c.characterId], persona: c.powerUserSettings?.persona_description });
+            const plan = message.extra?.czghCreativePlanning?.[current.swipeId], previous = message.extra?.czghTheater?.[current.swipeId]?.text;
+            // Same text ST would send as prompt (regex scripts applied), minus this plugin's own plan and earlier theater.
+            const chat = await Promise.all(c.chat.map(async (m, i) => ({ is_user: m.is_user, is_system: m.is_system, name: m.name, mes: typeof m.mes === 'string' ? await promptText(m.mes, m, c.chat.length - 1 - i) : m.mes })));
+            signal.throwIfAborted();
+            const body = await promptText(bodyOnly(message.mes, plan, previous), message, c.chat.length - 1 - messageId);
+            const messages = theaterMessages({ chat, messageId, body, prompt: config.theaterPrompt, history: config.theaterHistory, charName: c.name2, userName: c.name1, character: c.characters?.[c.characterId], persona: c.powerUserSettings?.persona_description });
             const request = await resolveRequest({ selection: config.theaterApiSelection, maxTokens: config.theaterMaxTokens, signal });
             signal.throwIfAborted();
             if (!alive()) throw new Error('正文已变化，本次小剧场已放弃。');
-            const body = { ...request, messages, stream: !!config.theaterStream, max_tokens: Number(config.theaterMaxTokens) };
+            const payload = { ...request, messages, stream: !!config.theaterStream, max_tokens: Number(config.theaterMaxTokens) };
             current.phase = 'generating'; update();
-            const response = await fetch('/api/backends/chat-completions/generate', { method: 'POST', headers: getRequestHeaders(), signal, body: JSON.stringify(body) });
+            const response = await fetch('/api/backends/chat-completions/generate', { method: 'POST', headers: getRequestHeaders(), signal, body: JSON.stringify(payload) });
             if (!response.ok) throw new Error(`小剧场 API 请求失败（HTTP ${response.status}）。`);
             const choice = await readPlanResponse(response, text => { if (!alive()) return; current.text = text; current.phase = 'streaming'; update(); }, signal);
             const text = extractTheater(choice.message?.content, choice.finish_reason);
             if (!alive()) throw new Error('正文已变化，本次小剧场已放弃。');
-            const record = { version: 1, requestId: current.requestId, text, model: body.model, createdAt: Date.now(), bodyFingerprint: fingerprint(message.mes) };
+            // Appended after the body as plain text; a regenerated theater replaces the earlier one.
+            const base = previous && message.mes.endsWith(previous) ? message.mes.slice(0, -previous.length).replace(/\s+$/, '') : message.mes;
+            message.mes = `${base}\n\n${text}`;
+            if (Array.isArray(message.swipes) && typeof message.swipes[current.swipeId] === 'string') message.swipes[current.swipeId] = message.mes;
+            const record = { version: 1, requestId: current.requestId, text, model: payload.model, createdAt: Date.now(), bodyFingerprint: fingerprint(message.mes) };
             message.extra ??= {};
             message.extra.czghTheater ??= {};
             message.extra.czghTheater[current.swipeId] = record;
@@ -65,7 +74,7 @@ export function createTheater({ getContext, getRequestHeaders, resolveRequest, s
                 message.swipe_info[current.swipeId].extra.czghTheater = structuredClone(message.extra.czghTheater);
             }
             run = null;
-            await save(); update();
+            await save(); refresh(messageId); update();
             return true;
         } catch (error) {
             if (run !== current) return false;
@@ -78,6 +87,7 @@ export function createTheater({ getContext, getRequestHeaders, resolveRequest, s
         generate,
         cancel,
         render: update,
+        current: () => records()[0] ?? null,
         isRunning: () => !!run,
         received(messageId, type) {
             const config = settings();

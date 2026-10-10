@@ -21,9 +21,13 @@ function init(){
     frame.style.cssText='display:block!important;width:100%!important;height:100%!important;border:0!important;margin:0!important;padding:0!important;background:transparent!important;border-radius:14px!important;clip-path:inset(0 round 14px)!important;';dialog.append(frame);document.body.append(dialog);attachPanelInteractions(dialog);
     const send=(type,payload)=>frame.contentWindow?.postMessage({channel:CHANNEL,type,payload},location.origin);
     const theme=()=>themeSnapshot(getComputedStyle(document.body));
-    const workbench=createWorkbench({context:ctx,headers:getRequestHeaders,saveSettings});
-    const panelFrames=new Map(),theaterFrames=new Map();
-    // Floor iframes share one document; `type` tells it whether to show a plan or a theater record.
+    // ST's own regex scripts, prompt side, so the planner and theater see the same history the body request does.
+    let regexEngine;const promptText=async(text,message,depth)=>{regexEngine??=await import('/scripts/extensions/regex/engine.js').catch(()=>({}));if(typeof regexEngine.getRegexedString!=='function')return text;try{return regexEngine.getRegexedString(text,message?.is_user?regexEngine.regex_placement.USER_INPUT:regexEngine.regex_placement.AI_OUTPUT,{isPrompt:true,depth});}catch{return text;}};
+    const workbench=createWorkbench({context:ctx,headers:getRequestHeaders,saveSettings,promptText});
+    // Plan and theater are written into the floor text itself; re-render that floor the way ST does.
+    const refresh=id=>{const c=ctx(),message=c.chat?.[id];if(!message)return;if(typeof c.updateMessageBlock==='function'){c.updateMessageBlock(id,message);return;}const node=document.querySelector(`.mes[mesid="${id}"] .mes_text`);if(node&&typeof c.messageFormatting==='function')node.innerHTML=c.messageFormatting(message.mes,message.name,!!message.is_system,!!message.is_user,id);};
+    const panelFrames=new Map();
+    // One floor bar under the latest user message carries plan progress and the theater controls.
     const syncFrames=(frames,records,title,type)=>{
         for(const [id,item] of frames)if(!records.some(r=>r.messageId===id)||!item.frame.isConnected){item.frame.remove();frames.delete(id);}
         for(const record of records){
@@ -33,12 +37,14 @@ function init(){
             if(!item){const panel=document.createElement('iframe');panel.title=title;panel.src=new URL('../ui/message.html?v=0.5.0',import.meta.url).href;panel.style.cssText='display:block!important;width:100%!important;height:42px!important;border:0!important;margin:8px 0!important;background:transparent!important;';parent.append(panel);item={frame:panel,record};frames.set(record.messageId,item);panel.addEventListener('load',()=>panel.contentWindow?.postMessage({channel:CHANNEL,type,payload:payload()},location.origin));}
             item.record=record;
             const deliver=()=>{item.timer=null;if(item.frame.isConnected)item.frame.contentWindow?.postMessage({channel:CHANNEL,type,payload:payload()},location.origin);};
-            if(record.phase==='streaming'){if(!item.timer)item.timer=setTimeout(deliver,60);}else{clearTimeout(item.timer);deliver();}
+            if(record.phase==='streaming'||record.theater?.phase==='streaming'){if(!item.timer)item.timer=setTimeout(deliver,60);}else{clearTimeout(item.timer);deliver();}
         }
     };
-    const allFrames=()=>[...panelFrames.values(),...theaterFrames.values()];
-    const plans=createMessagePlans({chatId,messages:()=>ctx().chat||[],save:()=>ctx().saveChat(),display:()=>!!ctx().extensionSettings[ID]?.displayPlan,render:records=>syncFrames(panelFrames,records,'本楼创作规划','plan')});
-    const theater=createTheater({getContext:ctx,getRequestHeaders,resolveRequest:args=>workbench.theaterRequest(args),save:()=>ctx().saveChat(),chatId,isAborted:()=>!!ctx().streamingProcessor?.abortController?.signal?.aborted,render:records=>syncFrames(theaterFrames,records,'本楼小剧场','theater')});
+    const allFrames=()=>[...panelFrames.values()];
+    const showBar=()=>{const s=ctx().extensionSettings[ID]||{};return !!s.displayPlan||(!!s.theaterEnabled&&s.theaterAutoGenerate===false);};
+    let theater;
+    const plans=createMessagePlans({chatId,messages:()=>ctx().chat||[],save:()=>ctx().saveChat(),refresh,display:showBar,render:records=>syncFrames(panelFrames,records.map(r=>({...r,theater:theater?.current()||null})),'本楼创作规划','plan')});
+    theater=createTheater({getContext:ctx,getRequestHeaders,resolveRequest:args=>workbench.theaterRequest(args),save:()=>ctx().saveChat(),chatId,refresh,promptText,isAborted:()=>!!ctx().streamingProcessor?.abortController?.signal?.aborted,render:()=>plans.render()});
     const binding=createGenerationBinding({identity:chatId,isAborted:()=>!!ctx().streamingProcessor?.abortController?.signal?.aborted,discard:id=>plans.discard(id),bind:async(record,messageId)=>{
         const message=ctx().chat?.[messageId];if(!message)return;
         await plans.bind({requestId:record.requestId,messageId,swipeId:message.swipe_id??0});
@@ -53,8 +59,7 @@ function init(){
     window.addEventListener('message',event=>{
         const knownFrame=acceptsMessage(event,frame.contentWindow,location.origin)||allFrames().some(item=>acceptsMessage(event,item.frame.contentWindow,location.origin));
         if(knownFrame&&event.data.type==='resume'){const item=[...panelFrames.values()].find(x=>x.frame.contentWindow===event.source);if(!item||(item.record.phase==='awaiting'&&item.record.chatId===chatId()))planner.resume();return;}
-        if(knownFrame&&event.data.type==='theater.generate'){const item=[...theaterFrames.values()].find(x=>x.frame.contentWindow===event.source);if(item&&item.record.chatId===chatId()&&!theater.busy(item.record.phase))void theater.generate(item.record.messageId);else theater.render();return;}
-        for(const item of theaterFrames.values())if(acceptsMessage(event,item.frame.contentWindow,location.origin)&&event.data.type==='cancel'){theater.cancel();return;}
+        if(knownFrame&&event.data.type==='theater.generate'){const item=[...panelFrames.values()].find(x=>x.frame.contentWindow===event.source);const t=item?.record.theater;if(t&&t.chatId===chatId()&&!theater.busy(t.phase))void theater.generate(t.messageId);else theater.render();return;}
         if(knownFrame&&event.data.type==='appearance'){
             rpcQueue=rpcQueue.then(async()=>{
                 const mode={auto:'light',light:'dark',dark:'auto'}[ctx().extensionSettings[ID]?.appearance||'auto'];
@@ -66,7 +71,9 @@ function init(){
         if(acceptsMessage(event,frame.contentWindow,location.origin)&&event.data.type==='close'){dialog.close();return;}
         if(acceptsMessage(event,frame.contentWindow,location.origin)&&event.data.type==='cancel'){if([...panelFrames.values()].some(item=>item.record.phase==='waiting'))stopGeneration();planner.stop();binding.stopped();plans.settleWaiting('cancelled');return;}
         for(const item of panelFrames.values())if(acceptsMessage(event,item.frame.contentWindow,location.origin)&&event.data.type==='cancel'){
-            if(item.record.chatId===chatId()&&['waiting','preparing','streaming','awaiting'].includes(item.record.phase)){if(item.record.phase==='waiting')stopGeneration();planner.stop();binding.stopped();plans.settleWaiting('cancelled');}return;
+            if(item.record.chatId===chatId()&&['waiting','preparing','streaming','awaiting'].includes(item.record.phase)){if(item.record.phase==='waiting')stopGeneration();planner.stop();binding.stopped();plans.settleWaiting('cancelled');}
+            else if(theater.busy(item.record.theater?.phase))theater.cancel();
+            return;
         }
         for(const item of allFrames())if(acceptsMessage(event,item.frame.contentWindow,location.origin)&&event.data.type==='height'){
             const height=Number(event.data.payload);if(Number.isFinite(height))item.frame.style.setProperty('height',`${Math.min(560,Math.max(42,height))}px`,'important');return;
@@ -95,19 +102,21 @@ function init(){
     // Some extensions await API work inside native event listeners. Observe inserted floors too.
     new MutationObserver(changes=>{
         if(!changes.some(c=>[...c.addedNodes].some(n=>n.nodeType===1&&(n.matches('.mes')||n.querySelector('.mes')))))return;
-        if(observedChat!==chatId()){observedChat=chatId();for(const message of ctx().chat||[])announced.add(message);plans.render();theater.render();return;}
+        if(observedChat!==chatId()){observedChat=chatId();for(const message of ctx().chat||[])announced.add(message);plans.render();return;}
         const id=(ctx().chat?.length||0)-1;
         if(document.querySelector(`.mes[mesid="${id}"]`))announceUser(id);
-        plans.render();theater.render();
+        plans.render();
     }).observe(document.body,{childList:true,subtree:true});
-    on('MESSAGE_RECEIVED',(messageId,type)=>{binding.received(messageId,type);theater.received(messageId,type);});
+    on('CHAT_COMPLETION_SETTINGS_READY',data=>workbench.rememberBodyRequest(data));
+    // The plan is written into the floor first, so the theater reads a body that already carries it.
+    on('MESSAGE_RECEIVED',async(messageId,type)=>{await binding.received(messageId,type);theater.received(messageId,type);});
     on('GENERATION_STARTED',(type,_options,dryRun)=>{busy=true;send('state',{...planner.getState(),busy:planner.isPlanning()});binding.started();theater.generationStarted(type,dryRun);});
     on('GENERATION_STOPPED',()=>{busy=false;send('state',{...planner.getState(),busy:planner.isPlanning()});binding.stopped();plans.settleWaiting('cancelled');});
     on('GENERATION_ENDED',()=>{busy=false;send('state',{...planner.getState(),busy:planner.isPlanning()});binding.ended();plans.settleWaiting('skipped');plans.render();});
     on('CHAT_CHANGED',()=>{binding.stopped();plans.dispose();plans.render();theater.chatChanged();if(dialog.open)send('refresh');});
-    on('MESSAGE_SWIPED',()=>{plans.clearLive();theater.render();});
-    for(const event of ['CHARACTER_MESSAGE_RENDERED','MESSAGE_UPDATED','MESSAGE_EDITED','MESSAGE_DELETED','CHAT_LOADED'])on(event,()=>{plans.render();theater.render();});
+    on('MESSAGE_SWIPED',()=>{plans.clearLive();});
+    for(const event of ['CHARACTER_MESSAGE_RENDERED','MESSAGE_UPDATED','MESSAGE_EDITED','MESSAGE_DELETED','CHAT_LOADED'])on(event,()=>plans.render());
     let previous='';setInterval(()=>{const value=theme(),json=JSON.stringify(value);if(json===previous)return;previous=json;if(dialog.open)send('theme',value);for(const item of allFrames())item.frame.contentWindow?.postMessage({channel:CHANNEL,type:'theme',payload:value},location.origin);},800);
-    plans.render();theater.render();
+    plans.render();
 }
 ctx().eventSource.on(ctx().eventTypes.APP_READY,init);init();

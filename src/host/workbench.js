@@ -13,8 +13,9 @@ import { freezeCurrentRequest } from '../planning/current-request.js?v=0.5.0';
 import { createCredentialStore } from './credential-store.js?v=0.5.0';
 import { profileRequest, authorizeLocalRequest } from '../planning/profiles.js?v=0.5.0';
 const ID = 'czgh_external_planner';
-export function createWorkbench({ context, headers, saveSettings }) {
+export function createWorkbench({ context, headers, saveSettings, promptText }) {
     let source;
+    let bodyRequest = null; // Last body request seen on CHAT_COMPLETION_SETTINGS_READY, for the theater's "current connection".
     const vault = createCredentialStore();
     const parseYaml = text => globalThis.SillyTavern.libs?.yaml?.parse?.(text) ?? JSON.parse(text);
     const read = () => migrateSettings(migrateSchemes(context().extensionSettings[ID]));
@@ -49,7 +50,7 @@ export function createWorkbench({ context, headers, saveSettings }) {
         const world = await import('/scripts/world-info.js');
         const c = context();
         const manager = c.getPresetManager?.('openai') || (await import('/scripts/preset-manager.js')).getPresetManager('openai');
-        return captureSources({ context, world, manager, openai: { oai_settings: c.chatCompletionSettings }, powerUser: c.powerUserSettings, baiBai: globalThis.STBaiBaiBook }, { signal, extraBooks, generationType });
+        return captureSources({ context, world, manager, openai: { oai_settings: c.chatCompletionSettings }, powerUser: c.powerUserSettings, baiBai: globalThis.STBaiBaiBook, promptText }, { signal, extraBooks, generationType });
     }
     async function snapshot(refresh = false) {
         const settings = read();
@@ -69,7 +70,7 @@ export function createWorkbench({ context, headers, saveSettings }) {
                 if (typeof payload.displayPlan === 'boolean') state.displayPlan = payload.displayPlan;
                 if (['auto','light','dark'].includes(payload.appearance)) state.appearance = payload.appearance;
                 if (typeof payload.apiSelection === 'string' && (await api.list()).some(p => p.id === payload.apiSelection)) state.apiSelection = payload.apiSelection;
-                if (typeof payload.theaterApiSelection === 'string' && (payload.theaterApiSelection === '' || (await api.list()).some(p => p.id === payload.theaterApiSelection && p.origin !== 'current'))) state.theaterApiSelection = payload.theaterApiSelection;
+                if (typeof payload.theaterApiSelection === 'string' && (payload.theaterApiSelection === '' || (await api.list()).some(p => p.id === payload.theaterApiSelection))) state.theaterApiSelection = payload.theaterApiSelection;
                 await write(state);
             } else if (method === 'selection.update') {
                 assertSafeData(payload);
@@ -123,10 +124,21 @@ export function createWorkbench({ context, headers, saveSettings }) {
             } else if (method === 'scheme.remove') await write(applySchemeOperation(state, { kind: payload.kind, operation: 'delete', id: payload.id }));
             return snapshot();
         },
-        // Theater runs after the body, so the frozen current connection is unavailable; only saved schemes are used.
+        rememberBodyRequest(data) {
+            if (!data || typeof data !== 'object' || !data.chat_completion_source) return;
+            const copy = structuredClone(data); copy.messages = []; bodyRequest = copy;
+        },
+        // Theater runs after the body; "current connection" reuses the connection settings of the body request just sent.
         async theaterRequest({ selection, maxTokens, signal }) {
             if (!selection) throw new Error('请先在设置中选择小剧场 API 方案。');
-            if (selection === 'current') throw new Error('小剧场需使用独立 API 方案，请选择预设编辑器方案或本地方案。');
+            if (selection === 'current') {
+                if (!bodyRequest) throw new Error('尚未捕获到本轮正文连接，请先生成一次正文或选择其他小剧场 API 方案。');
+                const response = await fetch('/api/secrets/read', { method: 'POST', headers: headers(), body: '{}', signal });
+                if (!response.ok) throw Error('无法冻结当前连接的密钥引用。');
+                const request = freezeCurrentRequest(bodyRequest, await response.json(), parseYaml);
+                request.max_tokens = Number(maxTokens);
+                return request;
+            }
             const profile = await api.resolve(selection);
             const request = profileRequest(profile, [], maxTokens, parseYaml);
             if (profile.keyRef) return authorizeLocalRequest(request, await vault.get(profile.keyRef), parseYaml);

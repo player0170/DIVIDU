@@ -1,11 +1,8 @@
 /* 楼内独立样式：主题只使用约定的五个宿主变量。 */
 *{box-sizing:border-box}html,body{margin:0;padding:0;color:var(--SmartThemeBodyColor,#28354c);font:12px var(--mainFontFamily,Arial,sans-serif);background:transparent}details{border:1px solid var(--SmartThemeBorderColor,#dce7f7);border-radius:8px;background:var(--SmartThemeBlurTintColor,#f6f9ff)}summary{cursor:pointer;padding:10px;font-weight:600}#stale{font-weight:400;opacity:.7}pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:470px;overflow:auto;margin:0;padding:0 12px 12px;line-height:1.6;font-family:var(--monoFontFamily,monospace)}
 
-/* 楼内取消入口始终在标题右侧，不触发展开或折叠。 */
-summary{position:relative;padding-right:42px;min-height:40px}#cancel{position:absolute;right:4px;top:3px;width:34px;height:32px;border:0;border-radius:7px;background:transparent;color:inherit;font:inherit;cursor:pointer}#cancel:hover{background:#80808022}#cancel:disabled{opacity:.25;cursor:default}
-
-/* 楼内外观入口与主面板同步，显式外观只覆盖约定的主题变量。 */
-summary{padding-right:78px}#appearance{position:absolute;right:40px;top:3px;width:34px;height:32px;border:0;border-radius:7px;background:transparent;color:inherit;cursor:pointer}button svg{display:block;margin:auto;pointer-events:none}#appearance:hover{background:#80808022}
+/* 所有按钮并排在标题右侧的一行里：外观、生成正文、生成小剧场、停止；点击不触发展开或折叠。 */
+summary{position:relative;padding-right:150px;min-height:40px}.actions{position:absolute;right:4px;top:3px;display:flex;gap:2px}.actions button{width:34px;height:32px;border:0;border-radius:7px;background:transparent;color:inherit;font:inherit;cursor:pointer}.actions button:hover{background:#80808022}.actions button:disabled{opacity:.25;cursor:default}.actions button[hidden]{display:none}button svg{display:block;margin:auto;pointer-events:none}
 :root[data-appearance=light]{--SmartThemeBodyColor:#23314c!important;--SmartThemeBlurTintColor:#fcfdff!important;--SmartThemeBorderColor:#dce7f7!important}
 :root[data-appearance=dark]{color-scheme:dark;--SmartThemeBodyColor:#e6edfb!important;--SmartThemeBlurTintColor:#171d29!important;--SmartThemeBorderColor:#354158!important}
 
@@ -13,10 +10,3 @@ summary{padding-right:78px}#appearance{position:absolute;right:40px;top:3px;widt
 .is-generating svg{animation:planning-breathe 1.4s ease-in-out infinite;color:#3779fa}
 @keyframes planning-breathe{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.48;transform:scale(.88)}}
 @media(prefers-reduced-motion:reduce){.is-generating svg{animation:none}}
-
-/* 手动正文入口与外观按钮独立于展开操作。 */
-summary{padding-right:114px}#appearance{right:76px}#resume{position:absolute;right:40px;top:3px;width:34px;height:32px;border:0;border-radius:7px;background:transparent;color:inherit;cursor:pointer}#resume:disabled{opacity:.25;cursor:default}
-
-/* 小剧场楼内入口复用同一文档：生成按钮占据手动正文按钮的位置，正文文本按普通段落显示。 */
-#theater{position:absolute;right:40px;top:3px;width:34px;height:32px;border:0;border-radius:7px;background:transparent;color:inherit;cursor:pointer}#theater:hover,#resume:hover{background:#80808022}#theater:disabled{opacity:.25;cursor:default}#theater[hidden],#resume[hidden]{display:none}
-body.theater pre{font-family:var(--mainFontFamily,Arial,sans-serif);font-size:13px}

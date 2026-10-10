@@ -1,4 +1,14 @@
-/* 小剧场：正文完成后的独立请求构建与结果校验；只读取聊天，不改写正文。 */
+/* 小剧场：正文完成后的独立请求构建与结果校验；只读取聊天，结果追加到正文末尾。 */
+// The body as the theater sees it: without the plan block in front and without an earlier theater at the end.
+export function bodyOnly(mes, plan, previousTheater) {
+    let text = typeof mes === 'string' ? mes : '';
+    if (plan?.text && plan.openTag && plan.closeTag) {
+        const block = `${plan.openTag}\n${plan.text}\n${plan.closeTag}`;
+        if (text.startsWith(block)) text = text.slice(block.length).replace(/^\s+/, '');
+    }
+    if (previousTheater && text.endsWith(previousTheater)) text = text.slice(0, -previousTheater.length).replace(/\s+$/, '');
+    return text;
+}
 export function validateTheater(settings) {
     for (const [field, min, max] of [['theaterMaxTokens', 64, 100000], ['theaterHistory', 0, 50], ['timeoutSeconds', 10, 1800]]) {
         if (!Number.isInteger(Number(settings[field])) || Number(settings[field]) < min || Number(settings[field]) > max) {
@@ -8,8 +18,9 @@ export function validateTheater(settings) {
     if (typeof settings.theaterPrompt !== 'string' || !settings.theaterPrompt.trim()) throw new Error('小剧场提示词不能为空。');
 }
 
-export function theaterMessages({ chat, messageId, prompt, history, charName, userName, character, persona }) {
-    const target = chat?.[messageId];
+export function theaterMessages({ chat, messageId, prompt, history, charName, userName, character, persona, body }) {
+    const source = chat?.[messageId];
+    const target = source && { ...source, mes: typeof body === 'string' ? body : source.mes };
     if (!target || target.is_user || target.is_system || typeof target.mes !== 'string' || !target.mes.trim()) throw new Error('没有可用于小剧场的正文。');
     const count = Math.max(0, Math.min(50, Math.trunc(Number(history) || 0)));
     const earlier = count ? chat.slice(0, messageId).filter(m => !m.is_system && typeof m.mes === 'string' && m.mes.trim()).slice(-count) : [];
