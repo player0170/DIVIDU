@@ -1,6 +1,9 @@
 /* 独立方案存储：迁移旧设置、校验可持久化数据，以副本执行增删改。 */
 import { createId } from '../bridge/id.js?v=0.5.0';
 const KINDS = ['api', 'preset', 'world'];
+// The post-body stage ("theater") keeps its own preset selection but shares the saved preset schemes.
+export const listKind = kind => kind === 'theater' ? 'preset' : kind;
+export const selectionOf = (state, kind) => kind === 'theater' ? state.theaterSelection : state.selection;
 export function assertSafeData(value) {
     if (!value || typeof value !== 'object') return;
     for (const [key, child] of Object.entries(value)) {
@@ -17,10 +20,12 @@ export function migrateSchemes(settings = {}) {
     }
     for (const kind of KINDS) if (!Array.isArray(result.schemes[kind])) throw new Error('方案数据损坏，请保留原数据。');
     result.selection ??= { presetId: '', promptOverrides: {}, groupOverrides: {}, bookOverrides: {}, entryOverrides: {}, extraBooks: [], compatibilityIds: ['baibai', 'seven-days'] };
+    result.theaterSelection ??= { presetId: '', promptOverrides: {}, groupOverrides: {} };
     result.schemeSelection ??= { preset: '', world: '' };
+    result.schemeSelection.theater ??= '';
     result.schemeBaseline ??= {};
-    for (const kind of ['preset','world']) {
-        if (result.schemeSelection[kind] !== '@current' && !result.schemes[kind].some(x => x.id === result.schemeSelection[kind])) result.schemeSelection[kind] = '';
+    for (const kind of ['preset','world','theater']) {
+        if (result.schemeSelection[kind] !== '@current' && !result.schemes[listKind(kind)].some(x => x.id === result.schemeSelection[kind])) result.schemeSelection[kind] = '';
         result.schemeBaseline[kind] ??= selectionPayload(result, kind);
     }
     result.apiSelection ??= result.profileId ? `external:${result.profileId}` : result.schemes.api.length ? 'local:legacy-manual' : 'current';
@@ -35,7 +40,7 @@ export function applySchemeOperation(state, { kind, operation, id, name, payload
     const list = next.schemes[kind];
     const index = list.findIndex(item => item.id === id);
     if (operation !== 'create' && index < 0) throw new Error('仅可修改创作规划中仍存在的方案。');
-    if (operation === 'delete') { list.splice(index, 1); if (next.schemeSelection[kind] === id) next.schemeSelection[kind] = ''; }
+    if (operation === 'delete') { list.splice(index, 1); for (const key of Object.keys(next.schemeSelection)) if (listKind(key) === kind && next.schemeSelection[key] === id) next.schemeSelection[key] = ''; }
     else {
         if (typeof name !== 'string' || !name.trim() || name.length > 100) throw new Error('请输入不超过 100 字的方案名称。');
         assertSafeData(payload);
@@ -46,8 +51,9 @@ export function applySchemeOperation(state, { kind, operation, id, name, payload
 }
 
 export function selectionPayload(state, kind) {
-    const keys = kind === 'preset' ? ['presetId','promptOverrides','groupOverrides'] : ['bookOverrides','entryOverrides','extraBooks'];
-    return structuredClone(Object.fromEntries(keys.map(k => [k,state.selection[k]])));
+    const keys = kind === 'world' ? ['bookOverrides','entryOverrides','extraBooks'] : ['presetId','promptOverrides','groupOverrides'];
+    const selection = selectionOf(state, kind);
+    return structuredClone(Object.fromEntries(keys.map(k => [k,selection[k]])));
 }
 export function rememberScheme(state, kind, id) {
     state.schemeSelection[kind] = id;
@@ -55,7 +61,7 @@ export function rememberScheme(state, kind, id) {
 }
 export function schemeSelectionState(state, kind) {
     const id = state.schemeSelection[kind];
-    const base = state.schemes[kind].find(x => x.id === id)?.payload || state.schemeBaseline[kind];
+    const base = state.schemes[listKind(kind)].find(x => x.id === id)?.payload || state.schemeBaseline[kind];
     const normalize = value => Array.isArray(value) ? value.map(normalize).sort() : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(k => [k,normalize(value[k])])) : value;
     return { id, dirty: JSON.stringify(normalize(selectionPayload(state,kind))) !== JSON.stringify(normalize(base)) };
 }

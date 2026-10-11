@@ -1,7 +1,7 @@
 /* 三页工作台视图：设置、预设开关、世界书开关与来源详情；所有操作交给宿主。 */
 import { el, button, field, check, toggleSwitch, select, section, detail, ask } from './components.js?v=0.5.0';
 import { entryKey } from '../planning/world-info.js?v=0.5.0';
-import { schemeSelectionState } from '../planning/schemes.js?v=0.5.0';
+import { schemeSelectionState, listKind } from '../planning/schemes.js?v=0.5.0';
 import { promptDefaults } from '../planning/core.js?v=0.5.0';
 import { editAdditional } from './additional-editor.js?v=0.5.0';
 import { editPrompt } from './prompt-editor.js?v=0.5.0';
@@ -10,22 +10,25 @@ export function renderView(root, state, ui, act) {
     root.replaceChildren();
     const toolbar=(kind)=>{
         const bar=el('div','scheme-bar');bar.append(el('span','muted','方案'));
-        const nativeName=kind==='preset'?'当前酒馆预设':'当前酒馆世界书';
-        const tracked=schemeSelectionState(s,kind), selected=tracked.id;
-        const options=[{id:'',name:''},{id:'@current',name:nativeName},...s.schemes[kind]];
-        const chooser=select(`${kind==='preset'?'预设':'世界书'}方案`,options,selected,async id=>{
+        const nativeName=kind==='world'?'当前酒馆世界书':'当前酒馆预设';
+        const tracked=schemeSelectionState(s,kind), selected=tracked.id, saved=s.schemes[listKind(kind)];
+        const options=[{id:'',name:''},{id:'@current',name:nativeName},...saved];
+        const chooser=select(`${kind==='world'?'世界书':'预设'}方案`,options,selected,async id=>{
             if(id==='@current'){
                 if(await ask(`是否载入${nativeName}？将替换本页的独立选择，不修改酒馆原配置。`,'',true,'载入'))await act('scheme.loadCurrent',{kind});
                 else renderView(root,state,ui,act);
             }else if(id)await act('scheme.save',{kind,applyId:id});
         });
         chooser.options[0].disabled=true;chooser.options[0].hidden=true;bar.append(chooser);
-        bar.append(button('新建方案',async()=>{const name=await ask('新建方案','');if(name)await act('scheme.save',{kind,name});},'+'));
-        const overwrite=button('覆盖方案',async()=>{const item=options.find(x=>x.id===selected);if(!item?.id)return;const name=await ask('覆盖方案',item.name);if(name)await act('scheme.save',{kind,id:item.id,name});},'↥');overwrite.disabled=!s.schemes[kind].some(x=>x.id===selected);if(overwrite.disabled)overwrite.title='请先选择已保存的方案；当前酒馆来源不能覆盖';bar.append(overwrite);
-        const remove=button('删除方案',async()=>{if(await ask('删除选中的方案？','',true)){await act('scheme.remove',{kind,id:selected});}},'⌫');remove.disabled=!s.schemes[kind].some(x=>x.id===selected);if(remove.disabled)remove.title='请先选择已保存的方案；当前酒馆来源不能删除';bar.append(remove);return bar;
+        // Short accessible names; the tooltip spells out what each button saves or replaces.
+        const create=button('新建方案',async()=>{const name=await ask('另存为新方案','');if(name)await act('scheme.save',{kind,name});},'+');create.title='另存为新方案：把本页当前选择保存成一个新的插件方案';bar.append(create);
+        const overwrite=button('覆盖方案',async()=>{const item=options.find(x=>x.id===selected);if(!item?.id)return;const name=await ask('保存到当前方案',item.name);if(name)await act('scheme.save',{kind,id:item.id,name});},'↥');overwrite.disabled=!saved.some(x=>x.id===selected);overwrite.title=overwrite.disabled?'保存到当前方案：请先选择已保存的插件方案；当前酒馆来源不能覆盖，请用＋另存':'保存到当前方案：用本页当前选择替换选中的插件方案';bar.append(overwrite);
+        const remove=button('删除方案',async()=>{if(await ask('删除选中的方案？','',true)){await act('scheme.remove',{kind,id:selected});}},'⌫');remove.disabled=!saved.some(x=>x.id===selected);remove.title=remove.disabled?'删除：请先选择已保存的插件方案；当前酒馆来源不能删除':'删除当前选中的插件方案';bar.append(remove);return bar;
     };
-    const saveHint=kind=>{const x=schemeSelectionState(s,kind);const hint=el('p','save-hint',x.dirty?'改动未保存':x.id?'改动已保存':'');hint.setAttribute('role','status');if(!x.id&&x.dirty)hint.append(el('span','save-help',' · 点击＋新建方案'));return hint;};
-    const change=(key,id,value)=>act('selection.update',{[key]:{...selection[key],[id]:value}});
+    const saveHint=kind=>{const x=schemeSelectionState(s,kind);const hint=el('p','save-hint',x.dirty?'改动未保存':x.id?'改动已保存':'');hint.setAttribute('role','status');if(!x.id&&x.dirty)hint.append(el('span','save-help',' · 点击＋另存为新方案'));else if(x.dirty)hint.append(el('span','save-help',' · 点击 ↥ 保存到当前方案，或＋另存为新方案'));return hint;};
+    const stage=ui.presetStage==='theater'?'theater':'preset';
+    const stageSelection=stage==='theater'?s.theaterSelection:selection;
+    const change=(key,id,value,kind='preset')=>{const base=kind==='theater'?s.theaterSelection:selection;return act('selection.update',{[key]:{...base[key],[id]:value},...(kind==='theater'?{stage:'theater'}:{})});};
     const row=(label,content,checked,toggle)=>{const node=el('div','entry-row');const open=button('查看 '+label,()=>detail(label,content));open.textContent=label;open.className='entry-open';node.append(open,toggleSwitch(label,checked,toggle));node.addEventListener('click',event=>{if(event.target===node)detail(label,content);});return node;};
     if(ui.page==='settings'){
         root.append(check('启用创作规划',s.enabled,v=>act('settings.update',{enabled:v})));
@@ -35,9 +38,10 @@ export function renderView(root, state, ui, act) {
         const draft=ui.apiDraft;
         const bar=el('div','scheme-bar');bar.append(el('span','muted','方案'),select('API 方案',apiOptions.map(p=>({...p,name:`${p.origin==='local'?'本地 · ':''}${p.name}`})),s.apiSelection,async value=>{ui.apiDraft={};await act('settings.update',{apiSelection:value});}));
         const save=async overwrite=>{const name=await ask(overwrite?'覆盖 API 方案':'新建 API 方案',overwrite?profile?.name:'');if(name)await act('api.save',{id:overwrite?s.apiSelection:undefined,sourceId:s.apiSelection,name,apiUrl:draft.apiUrl,model:draft.model,key:draft.key,additional:draft.additional});};
-        bar.append(button('新建 API 方案',()=>save(false),'+'));
-        const over=button('覆盖 API 方案',()=>save(true),'↥');over.disabled=profile?.origin!=='local';bar.append(over);
-        const del=button('删除 API 方案',async()=>{if(await ask('删除此 API 方案？','',true))await act('api.remove',{id:s.apiSelection});},'⌫');del.disabled=profile?.origin!=='local';bar.append(del);api.append(bar);
+        const create=button('新建 API 方案',()=>save(false),'+');create.title='另存为新的本地 API 方案：用下方框内的 URL / Key / 模型 / 附加参数新建一个本地方案';bar.append(create);
+        const over=button('覆盖 API 方案',()=>save(true),'↥');over.disabled=profile?.origin!=='local';over.title=over.disabled?'保存到当前方案：只有插件本地方案可以被替换；酒馆当前连接和编辑器方案只读，请用＋另存为新方案':'保存到当前本地方案：用下方框内内容替换选中的本地方案';bar.append(over);
+        const del=button('删除 API 方案',async()=>{if(await ask('删除此 API 方案？','',true))await act('api.remove',{id:s.apiSelection});},'⌫');del.disabled=profile?.origin!=='local';del.title=del.disabled?'删除：只有插件本地方案可以删除':'删除当前选中的本地 API 方案';bar.append(del);api.append(bar);
+        api.append(el('p','hint',profile?.origin==='local'?'下方框内是草稿：改完点 ↥ 保存到当前本地方案才生效，或点 ＋ 另存为新方案。':'此方案只读：请求直接使用它自己的连接设置，下方框内的改动不会被使用；要在此基础上改动，请填好后点 ＋ 另存为新的本地方案。'));
         api.append(field('URL',draft.apiUrl??profile?.apiUrl,v=>draft.apiUrl=v));
         const key=field('Key',draft.key||'',v=>draft.key=v,'password');key.querySelector('input').placeholder=profile?.hasKey?'已保存，留空保留原密钥':'输入新密钥';key.append(button('显示或隐藏密钥',()=>{const input=key.querySelector('input');input.type=input.type==='password'?'text':'password';},'◉'));api.append(key);
         const model=field('模型',draft.model??profile?.model,v=>draft.model=v);model.querySelector('input').setAttribute('list','model-list');model.append(button('拉取模型',async()=>{ui.models=await act('api.models',{},false);renderView(root,state,ui,act);}));api.append(model);
@@ -53,14 +57,14 @@ export function renderView(root, state, ui, act) {
         root.append(section('提示词语法',syntax,true));
         const display=el('div','section-body');display.append(check('在用户消息下显示规划状态条',s.displayPlan,v=>act('settings.update',{displayPlan:v})),el('p','hint','规划和小剧场本身会直接写进回复正文（规划在前、小剧场在后），按酒馆正则正常美化；状态条只显示进度、错误和按钮。'));root.append(section('显示设置',display));
         const theater=el('div','section-body');
-        theater.append(check('启用小剧场',s.theaterEnabled,v=>act('settings.update',{theaterEnabled:v})),el('p','hint','正文完成后再请求一段番外小剧场，直接追加在该回复正文末尾，和酒馆自己生成的文字一样走正则美化；是否进入后续上下文由你的酒馆正则决定。'));
+        theater.append(check('启用小剧场（正文后阶段）',s.theaterEnabled,v=>act('settings.update',{theaterEnabled:v})),el('p','hint','正文完成后，按「预设」页里「正文后」阶段选定的预设和条目，连同世界书和含本轮正文的聊天历史再请求一次，让模型补全预设要求放在正文之后的全部区块（小剧场、状态栏等，标签以预设为准），结果直接追加在该回复正文末尾，和酒馆自己生成的文字一样走正则美化。'));
         const theaterProfiles=state.profiles;
         const theaterOptions=[{id:'',name:'请选择小剧场 API 方案'},...(s.theaterApiSelection&&!theaterProfiles.some(p=>p.id===s.theaterApiSelection)?[{id:s.theaterApiSelection,name:'原方案不可用，请重新选择'}]:[]),...theaterProfiles.map(p=>({id:p.id,name:`${p.origin==='local'?'本地 · ':''}${p.name}`}))];
         const theaterBar=el('div','scheme-bar');theaterBar.append(el('span','muted','方案'),select('小剧场 API 方案',theaterOptions,s.theaterApiSelection||'',v=>act('settings.update',{theaterApiSelection:v})));theater.append(theaterBar,el('p','hint','「酒馆当前连接」复用本轮正文请求的连接与模型；也可选预设编辑器方案或通用设置中新建的本地方案。'));
-        const theaterNumbers=el('div','two-fields');theaterNumbers.append(field('小剧场最大输出',s.theaterMaxTokens,v=>act('settings.update',{theaterMaxTokens:v}),'number'),field('参考最近楼层数',s.theaterHistory,v=>act('settings.update',{theaterHistory:v}),'number'));theater.append(theaterNumbers);
+        const theaterNumbers=el('div','two-fields');theaterNumbers.append(field('小剧场最大输出',s.theaterMaxTokens,v=>act('settings.update',{theaterMaxTokens:v}),'number'));theater.append(theaterNumbers,el('p','hint','超时沿用通用设置的超时秒数；预设和条目开关在「预设」页切到「正文后」阶段设置，世界书沿用规划的选择。'));
         theater.append(check('正文完成后自动生成小剧场',s.theaterAutoGenerate,v=>act('settings.update',{theaterAutoGenerate:v})),el('p','hint','关闭后由用户消息下状态条里的小剧场按钮手动触发；该模式下状态条会自动显示。'),check('流式输出小剧场',s.theaterStream,v=>act('settings.update',{theaterStream:v})));
         {
-            const key='theaterPrompt',title='小剧场提示词',description='发送给小剧场 API 的引导。角色资料、最近聊天和本轮正文由插件自动附加，无需填写宏。修改后点击完成保存；恢复默认仅替换当前草稿。';
+            const key='theaterPrompt',title='小剧场提示词',description='追加在正文后阶段上下文末尾的引导。预设、世界书和含本轮正文的聊天历史由插件自动组装，无需填写宏；要生成哪些标签由预设自己规定。修改后点击完成保存；恢复默认仅替换当前草稿。';
             const value=s[key]??promptDefaults[key];
             const row=button(`编辑${title}`,()=>editPrompt({title,value,defaultValue:promptDefaults[key],description,save:text=>act('settings.update',{[key]:text})}));
             row.className='prompt-setting';row.replaceChildren(el('span','prompt-name',title),el('small',value===promptDefaults[key]?'prompt-badge':'prompt-badge custom',value===promptDefaults[key]?'默认':'已自定义'));
@@ -85,8 +89,15 @@ export function renderView(root, state, ui, act) {
         const advancedCard=section('高级设置',advanced,ui.advancedCollapsed??true);
         advancedCard.addEventListener('toggle',()=>{ui.advancedCollapsed=!advancedCard.open;});root.append(advancedCard);
     } else if(ui.page==='preset') {
-        const bar=toolbar('preset');const chooser=el('div','preset-choice');chooser.append(el('span','muted','选择预设'),select('选择预设',state.presets.map(id=>({id,name:id})),selection.presetId||state.preset?.id,id=>act('selection.update',{presetId:id,promptOverrides:{},groupOverrides:{}})));bar.append(chooser);root.append(bar,saveHint('preset'));
-        for(const item of state.preset?.display||[]){if(item.type==='prompt'){const entry=item.entry;root.append(row(entry.name||entry.identifier,entry.content,entry.enabled,v=>change('promptOverrides',entry.identifier,v)));continue;}const group=item.group;const content=el('div','section-body');const groupToggle=toggleSwitch('启用 '+group.name,group.enabled,value=>change('groupOverrides',group.id,value));for(const entry of group.entries)content.append(row(entry.name||entry.identifier,entry.content,entry.enabled,v=>change('promptOverrides',entry.identifier,v)));const card=section(group.name,content,ui.collapsed?.[group.id]??group.collapsed);card.classList.add('switch-card');const summary=card.querySelector('summary');summary.replaceChildren(el('span','group-title',group.name),groupToggle);card.addEventListener('toggle',()=>{(ui.collapsed??={})[group.id]=!card.open;});root.append(card);}
+        // Two stages share the saved preset schemes but keep separate preset/entry selections.
+        const stages=el('div','stage-tabs');stages.setAttribute('role','tablist');
+        for(const [id,name] of [['preset','规划'],['theater','正文后（小剧场）']]){const tab=button(`${name}阶段预设`,()=>{ui.presetStage=id;renderView(root,state,ui,act);});tab.textContent=name;tab.className='stage-tab';tab.setAttribute('role','tab');tab.setAttribute('aria-selected',String(stage===id));stages.append(tab);}
+        root.append(stages);
+        const preset=stage==='theater'?state.theaterPreset:state.preset, presetError=stage==='theater'?state.theaterError:'';
+        const bar=toolbar(stage);const chooser=el('div','preset-choice');chooser.append(el('span','muted','选择预设'),select('选择预设',state.presets.map(id=>({id,name:id})),stageSelection.presetId||preset?.id,id=>act('selection.update',{presetId:id,promptOverrides:{},groupOverrides:{},...(stage==='theater'?{stage:'theater'}:{})})));bar.append(chooser);root.append(bar,saveHint(stage));
+        if(stage==='theater')root.append(el('p','hint',s.theaterEnabled?'正文完成后按这里的预设和条目请求小剧场；建议只保留与正文后区块相关的条目。':'小剧场尚未启用；在「设置 → 小剧场」勾选后，正文完成会按这里的预设和条目请求。'));
+        if(presetError)root.append(el('p','error',presetError));
+        for(const item of preset?.display||[]){if(item.type==='prompt'){const entry=item.entry;root.append(row(entry.name||entry.identifier,entry.content,entry.enabled,v=>change('promptOverrides',entry.identifier,v,stage)));continue;}const group=item.group;const content=el('div','section-body');const groupToggle=toggleSwitch('启用 '+group.name,group.enabled,value=>change('groupOverrides',group.id,value,stage));for(const entry of group.entries)content.append(row(entry.name||entry.identifier,entry.content,entry.enabled,v=>change('promptOverrides',entry.identifier,v,stage)));const card=section(group.name,content,ui.collapsed?.[`${stage}:${group.id}`]??group.collapsed);card.classList.add('switch-card');const summary=card.querySelector('summary');summary.replaceChildren(el('span','group-title',group.name),groupToggle);card.addEventListener('toggle',()=>{(ui.collapsed??={})[`${stage}:${group.id}`]=!card.open;});root.append(card);}
     } else {
         root.append(toolbar('world'),saveHint('world'));
         const bindings=[['全局世界书',state.bindings.global],['角色世界书',state.bindings.character],['聊天世界书',state.bindings.chat],['用户角色世界书',state.bindings.persona],['插件开启的世界书',selection.extraBooks]];

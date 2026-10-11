@@ -37,3 +37,12 @@ test('swipe excludes replaced response before history macros, regenerate uses al
     ctx.chat=[{mes:'保留的上一条回复'}];
     assert.equal((await captureSources(host,{generationType:'regenerate'})).history.length,1);
 });
+
+test('post-body stage keeps the full history, replaces one floor and still applies prompt-side regex',async()=>{
+    const ctx={chatId:'c',chat:[{is_user:true,mes:'本轮输入'},{mes:'正文\n\n旧小剧场'}],chatMetadata:{}};
+    const host={context:()=>ctx,manager:{getPresetList:()=>({}),getSelectedPresetName:()=>''},world:{loadWorldInfo:async()=>({entries:{}})},openai:{},powerUser:{},promptText:async(text,m,depth)=>`${text}@${depth}`};
+    const s=await captureSources(host,{generationType:'theater',replaceMes:{index:1,mes:'正文'}});
+    assert.deepEqual(s.history.map(m=>m.content),['本轮输入@1','正文@0']);
+    assert.equal(ctx.chat[1].mes,'正文\n\n旧小剧场');
+    assert.equal(s.macroEnvironment.lastcharmessage,'正文@0');
+});

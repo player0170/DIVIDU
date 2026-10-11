@@ -5,7 +5,7 @@ function freeze(value) {
     if (value && typeof value === 'object' && !Object.isFrozen(value)) { Object.freeze(value); Object.values(value).forEach(freeze); }
     return value;
 }
-export async function captureSources(host, { signal, extraBooks = [], generationType } = {}) {
+export async function captureSources(host, { signal, extraBooks = [], generationType, replaceMes } = {}) {
     const context = host.context();
     const identity = () => JSON.stringify([host.context().chatId, host.context().characterId, host.context().groupId]);
     const chatId = identity();
@@ -37,7 +37,9 @@ export async function captureSources(host, { signal, extraBooks = [], generation
     }
     // Text history goes through the same prompt-side regex scripts ST applies, so hidden blocks stay hidden here too.
     const chat = context.chat || [];
-    const history = await Promise.all(chat.map(async (m, i) => m.is_system ? null : ({ role: m.is_user ? 'user' : 'assistant', content: m.content != null ? structuredClone(m.content) : host.promptText ? await host.promptText(m.mes ?? '', m, chat.length - 1 - i) : (m.mes ?? ''), name: m.name, extra: structuredClone(m.extra || {}) }))).then(items => items.filter(Boolean));
+    // `replaceMes` lets the post-body stage read one floor without the result it is about to replace.
+    const mesOf = (m, i) => replaceMes && replaceMes.index === i ? replaceMes.mes : (m.mes ?? '');
+    const history = await Promise.all(chat.map(async (m, i) => m.is_system ? null : ({ role: m.is_user ? 'user' : 'assistant', content: m.content != null ? structuredClone(m.content) : host.promptText ? await host.promptText(mesOf(m, i), m, chat.length - 1 - i) : mesOf(m, i), name: m.name, extra: structuredClone(m.extra || {}) }))).then(items => items.filter(Boolean));
     check();
     // ST retains the replaced floor for swipe, but has already removed it for regenerate.
     if (generationType === 'swipe' && history.at(-1)?.role === 'assistant') history.pop();

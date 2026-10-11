@@ -17,7 +17,6 @@ export const defaults = Object.freeze({
     theaterAutoGenerate: true,
     theaterStream: false,
     theaterMaxTokens: 2000,
-    theaterHistory: 6,
     plannerInstruction: '你正在参与一次分阶段的协作写作。本轮由你完成当前预设要求的写作准备和创作规划，随后会由写作同事结合原始资料与你的规划完成正文及其他要求的成品。请沿用预设指定的身份、语言和创作方式。',
     writerInstruction: '你的规划同事已经完成了本轮写作准备，以下是供你接续使用的创作规划。请结合原始上下文、用户最新输入及当前预设，继续完成正文和预设要求的其他成品，无需重新输出规划区块。',
 });
@@ -39,10 +38,16 @@ const planningGuidance = `请按当前预设已启用的创作规划步骤及顺
 5. 涉及正文写作与附加成品的要求，是后续写作同事需要执行的交付要求，请在相关规划步骤中准确保留与写出，方便写作同事查看。格式确认按该步骤原文作答，不用本插件的规划外层标签替代正文成品格式。正文及其他成品由下一阶段的写作同事根据你本轮交付的规划来完成。
 6. 交接内容以指定的规划区块为范围，不复制整个预设或区块外的成品模板，不增加未要求的自我评价、总结、检查报告或结束宣言。`;
 const writingGuidance = `将规划中的安排落实到创作中，同时继续遵守原预设的具体要求，包括声明式指导、必须项、禁止项、节奏、篇幅、比例和格式。规划属于辅助材料，不替代原始资料；规划未复述某项要求不代表该要求失效，原预设要求生成的成品照常生成，未要求或禁止的不要新增。拟写安排不应当作已经发生的事实；与用户最新输入或已知事实冲突时以原始资料为准。无需额外展示预设未要求的执行说明或检查清单。`;
+// Post-body stage: the preset itself says which blocks follow the body and how they are tagged.
+const theaterGuidance = `你正在参与一次分阶段的协作写作。本轮正文已由写作同事完成，就是上方最后一条助手回复。现在由你补全当前预设要求放在正文之后输出的全部内容（例如小剧场、状态栏、选项、总结等附加区块），沿用预设指定的身份、语言和创作方式。
+1. 按预设中各附加区块的要求，使用预设规定的标签和格式逐一完整输出，保留预设规定的顺序；预设未要求的区块不要新增。
+2. 内容须承接本轮正文、用户最新输入及已有资料；不要重复、续写或改写正文，不要再次输出规划区块。
+3. 只输出这些附加区块本身，不加任何说明、标题或结束语。`;
+const previousTheaterPrompt = '本轮正文已经完成。请根据下方提供的角色资料、最近聊天和本轮正文，写一段简短的番外小剧场，例如幕后花絮、角色内心吐槽、平行时空或 Q 版短剧。贴合角色性格与说话方式；不续写、不改写正文剧情，小剧场内容不视为已发生的事实；篇幅约 200–500 字。只输出小剧场本身，不输出正文、状态栏、规划或额外说明。';
 export const promptDefaults = Object.freeze({
     plannerPrompt: `${defaults.plannerInstruction}\n${planningGuidance}`,
     writerPrompt: `${defaults.writerInstruction}\n${writingGuidance}`,
-    theaterPrompt: '本轮正文已经完成。请根据下方提供的角色资料、最近聊天和本轮正文，写一段简短的番外小剧场，例如幕后花絮、角色内心吐槽、平行时空或 Q 版短剧。贴合角色性格与说话方式；不续写、不改写正文剧情，小剧场内容不视为已发生的事实；篇幅约 200–500 字。只输出小剧场本身，不输出正文、状态栏、规划或额外说明。',
+    theaterPrompt: theaterGuidance,
 });
 
 // Conservative recognition of explicit format instructions, not past assistant output.
@@ -98,7 +103,7 @@ export function migrateSettings(saved = {}) {
     if (typeof saved.plannerPrompt !== 'string') merged.plannerPrompt = `${merged.plannerInstruction}\n${planningGuidance}`;
     if (saved.plannerPrompt === `${defaults.plannerInstruction}\n${previousPlanningGuidance}`) merged.plannerPrompt = promptDefaults.plannerPrompt;
     if (typeof saved.writerPrompt !== 'string') merged.writerPrompt = `${merged.writerInstruction}\n${writingGuidance}`;
-    if (typeof saved.theaterPrompt !== 'string') merged.theaterPrompt = promptDefaults.theaterPrompt;
+    if (typeof saved.theaterPrompt !== 'string' || saved.theaterPrompt === previousTheaterPrompt) merged.theaterPrompt = promptDefaults.theaterPrompt;
     return merged;
 }
 

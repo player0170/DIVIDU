@@ -1,5 +1,5 @@
 /* 工作台宿主接口：连接只读来源、方案服务、RPC 操作和独立上下文准备。 */
-import { migrateSchemes, applySchemeOperation, assertSafeData, rememberScheme } from '../planning/schemes.js?v=0.5.0';
+import { migrateSchemes, applySchemeOperation, assertSafeData, rememberScheme, listKind, selectionOf } from '../planning/schemes.js?v=0.5.0';
 import { createApiSchemes } from './api-schemes.js?v=0.5.0';
 import { captureSources } from './sources.js?v=0.5.0';
 import { migrateSettings } from '../planning/core.js?v=0.5.0';
@@ -10,6 +10,7 @@ import { buildPlanningContext } from '../planning/context.js?v=0.5.0';
 import { cleanSettings } from '../bridge/protocol.js?v=0.5.0';
 import { materializePluginMacros } from './plugin-macros.js?v=0.5.0';
 import { freezeCurrentRequest } from '../planning/current-request.js?v=0.5.0';
+import { theaterMessages } from '../planning/theater.js?v=0.5.0';
 import { createCredentialStore } from './credential-store.js?v=0.5.0';
 import { profileRequest, authorizeLocalRequest } from '../planning/profiles.js?v=0.5.0';
 const ID = 'czgh_external_planner';
@@ -46,18 +47,21 @@ export function createWorkbench({ context, headers, saveSettings, promptText }) 
         if (!Array.isArray(data.data)) throw new Error('API 没有返回模型列表，可手动输入。');
         return data.data.map(x => x.id).filter(x => typeof x === 'string');
     } });
-    async function capture(signal, extraBooks, generationType) {
+    async function capture(signal, extraBooks, generationType, replaceMes) {
         const world = await import('/scripts/world-info.js');
         const c = context();
         const manager = c.getPresetManager?.('openai') || (await import('/scripts/preset-manager.js')).getPresetManager('openai');
-        return captureSources({ context, world, manager, openai: { oai_settings: c.chatCompletionSettings }, powerUser: c.powerUserSettings, baiBai: globalThis.STBaiBaiBook, promptText }, { signal, extraBooks, generationType });
+        return captureSources({ context, world, manager, openai: { oai_settings: c.chatCompletionSettings }, powerUser: c.powerUserSettings, baiBai: globalThis.STBaiBaiBook, promptText }, { signal, extraBooks, generationType, replaceMes });
     }
+    // The post-body stage shares world/compatibility selection with planning but has its own preset and entry switches.
+    const theaterSelection = state => ({ ...state.selection, ...state.theaterSelection });
     async function snapshot(refresh = false) {
         const settings = read();
         if (!source || refresh) source = await capture(undefined, settings.selection.extraBooks);
-        let preset = null, error = '';
+        let preset = null, error = '', theaterPreset = null, theaterError = '';
         try { preset = resolvePreset(source, settings.selection); } catch (e) { error = e.message; }
-        return { settings, profiles: await api.list(), presets: Object.keys(source.presets), preset, books: source.books, bookNames: source.bookNames, bindings: source.bindings, error,
+        try { theaterPreset = resolvePreset(source, settings.theaterSelection); } catch (e) { theaterError = e.message; }
+        return { settings, profiles: await api.list(), presets: Object.keys(source.presets), preset, theaterPreset, theaterError, books: source.books, bookNames: source.bookNames, bindings: source.bindings, error,
             compatibility: adapters.map(a => ({ id: a.id, name: a.name, category: a.category, status: a.slots.some(key => source.injections[key]?.value) ? '本轮有注入' : '暂无注入' })) };
     }
     return {
@@ -74,12 +78,13 @@ export function createWorkbench({ context, headers, saveSettings, promptText }) 
                 await write(state);
             } else if (method === 'selection.update') {
                 assertSafeData(payload);
-                for (const key of ['promptOverrides','groupOverrides','bookOverrides','entryOverrides']) if (payload[key] && typeof payload[key] === 'object' && !Array.isArray(payload[key])) {
+                const theater = payload.stage === 'theater', target = theater ? state.theaterSelection : state.selection;
+                for (const key of theater ? ['promptOverrides','groupOverrides'] : ['promptOverrides','groupOverrides','bookOverrides','entryOverrides']) if (payload[key] && typeof payload[key] === 'object' && !Array.isArray(payload[key])) {
                     if (Object.values(payload[key]).some(v => typeof v !== 'boolean')) throw new Error('开关值必须为布尔值。');
-                    state.selection[key] = structuredClone(payload[key]);
+                    target[key] = structuredClone(payload[key]);
                 }
-                if (typeof payload.presetId === 'string') state.selection.presetId = payload.presetId;
-                for (const key of ['extraBooks','compatibilityIds']) if (Array.isArray(payload[key]) && payload[key].every(v => typeof v === 'string')) state.selection[key] = [...new Set(payload[key])];
+                if (typeof payload.presetId === 'string') target.presetId = payload.presetId;
+                if (!theater) for (const key of ['extraBooks','compatibilityIds']) if (Array.isArray(payload[key]) && payload[key].every(v => typeof v === 'string')) state.selection[key] = [...new Set(payload[key])];
                 await write(state); source = null;
             } else if (method === 'api.save') {
                 let base = {};
@@ -93,13 +98,13 @@ export function createWorkbench({ context, headers, saveSettings, promptText }) 
             } else if (method === 'api.remove') await api.remove(payload.id);
             else if (method === 'api.models') return api.models(await api.resolve(state.apiSelection));
             else if (method === 'scheme.loadCurrent') {
-                if (!['preset','world'].includes(payload.kind)) throw new Error('无效方案类型。');
+                if (!['preset','world','theater'].includes(payload.kind)) throw new Error('无效方案类型。');
                 const fresh = await capture(undefined, []);
-                if (payload.kind === 'preset') {
-                    const native = resolvePreset(fresh, { presetId: fresh.currentPreset });
-                    state.selection.presetId = fresh.currentPreset;
-                    state.selection.promptOverrides = Object.fromEntries(native.groups.flatMap(g => g.entries.map(e => [e.identifier, e.enabled])));
-                    state.selection.groupOverrides = Object.fromEntries(native.groups.filter(g => g.id).map(g => [g.id, g.enabled]));
+                if (payload.kind !== 'world') {
+                    const native = resolvePreset(fresh, { presetId: fresh.currentPreset }), target = selectionOf(state, payload.kind);
+                    target.presetId = fresh.currentPreset;
+                    target.promptOverrides = Object.fromEntries(native.groups.flatMap(g => g.entries.map(e => [e.identifier, e.enabled])));
+                    target.groupOverrides = Object.fromEntries(native.groups.filter(g => g.id).map(g => [g.id, g.enabled]));
                 } else {
                     state.selection.bookOverrides = {};
                     state.selection.entryOverrides = {};
@@ -108,25 +113,45 @@ export function createWorkbench({ context, headers, saveSettings, promptText }) 
                 rememberScheme(state, payload.kind, '@current');
                 await write(state); source = fresh;
             } else if (method === 'scheme.save') {
-                if (!['preset','world'].includes(payload.kind)) throw new Error('无效方案类型。');
-                const keys = payload.kind === 'preset' ? ['presetId','promptOverrides','groupOverrides'] : ['bookOverrides','entryOverrides','extraBooks'];
+                if (!['preset','world','theater'].includes(payload.kind)) throw new Error('无效方案类型。');
+                const list = listKind(payload.kind), target = selectionOf(state, payload.kind);
+                const keys = payload.kind === 'world' ? ['bookOverrides','entryOverrides','extraBooks'] : ['presetId','promptOverrides','groupOverrides'];
                 if (payload.applyId) {
-                    const item = state.schemes[payload.kind].find(s => s.id === payload.applyId);
+                    const item = state.schemes[list].find(s => s.id === payload.applyId);
                     if (!item) throw new Error('方案已不存在。');
-                    for (const key of keys) state.selection[key] = structuredClone(item.payload[key]);
+                    for (const key of keys) target[key] = structuredClone(item.payload[key]);
                     rememberScheme(state, payload.kind, payload.applyId);
                     await write(state); source = null;
                 } else {
-                    const next = applySchemeOperation(state, { kind: payload.kind, operation: payload.id ? 'overwrite' : 'create', id: payload.id, name: payload.name, payload: Object.fromEntries(keys.map(k => [k, state.selection[k]])) });
-                    rememberScheme(next, payload.kind, payload.id || next.schemes[payload.kind].at(-1).id);
+                    const next = applySchemeOperation(state, { kind: list, operation: payload.id ? 'overwrite' : 'create', id: payload.id, name: payload.name, payload: Object.fromEntries(keys.map(k => [k, target[k]])) });
+                    rememberScheme(next, payload.kind, payload.id || next.schemes[list].at(-1).id);
                     await write(next); source = null;
                 }
-            } else if (method === 'scheme.remove') await write(applySchemeOperation(state, { kind: payload.kind, operation: 'delete', id: payload.id }));
+            } else if (method === 'scheme.remove') await write(applySchemeOperation(state, { kind: listKind(payload.kind), operation: 'delete', id: payload.id }));
             return snapshot();
         },
         rememberBodyRequest(data) {
             if (!data || typeof data !== 'object' || !data.chat_completion_source) return;
             const copy = structuredClone(data); copy.messages = []; bodyRequest = copy;
+        },
+        // Post-body stage: the same independent context assembly as planning, with the stage's own preset selection
+        // and a history that already ends with this round's body (minus the theater result being replaced).
+        async theaterPrepare({ messageId, body, config, signal }) {
+            const state = migrateSchemes(config);
+            const selection = theaterSelection(state);
+            const frozen = await capture(signal, state.selection.extraBooks, 'theater', { index: messageId, mes: body });
+            const snapshotData = await materializePluginMacros(frozen, selection, globalThis.STBaiBaiBook);
+            await captureHelperVariables(snapshotData, context(), globalThis.TavernHelper, 'theater');
+            signal.throwIfAborted();
+            const selectedPreset = snapshotData.presets[selection.presetId || snapshotData.currentPreset];
+            snapshotData.maxContext = Number(selectedPreset?.openai_max_context) || snapshotData.maxContext;
+            snapshotData.inputBudget = snapshotData.maxContext - Number(config.theaterMaxTokens);
+            if (snapshotData.inputBudget <= 0) throw new Error('小剧场最大输出已超过所选预设的上下文额度。');
+            snapshotData.trigger = 'theater';
+            const built = await buildPlanningContext({ snapshot: snapshotData, selection, worldState: context().chatMetadata?.czghCreativePlanningWorld || {}, tokenize: text => context().getTokenCountAsync(text), serializeYaml: value => globalThis.SillyTavern.libs?.yaml?.stringify?.(value), renderTemplate: createTemplateRenderer({ enabled: state.templateCompat, api: globalThis.EjsTemplate, signal }) });
+            signal.throwIfAborted();
+            const request = await this.theaterRequest({ selection: state.theaterApiSelection, maxTokens: config.theaterMaxTokens, signal });
+            return { messages: theaterMessages(built.messages, config), request, sourceManifest: built.sourceManifest };
         },
         // Theater runs after the body; "current connection" reuses the connection settings of the body request just sent.
         async theaterRequest({ selection, maxTokens, signal }) {

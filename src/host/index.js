@@ -44,7 +44,8 @@ function init(){
     const showBar=()=>{const s=ctx().extensionSettings[ID]||{};return !!s.displayPlan||(!!s.theaterEnabled&&s.theaterAutoGenerate===false);};
     let theater;
     const plans=createMessagePlans({chatId,messages:()=>ctx().chat||[],save:()=>ctx().saveChat(),refresh,display:showBar,render:records=>syncFrames(panelFrames,records.map(r=>({...r,theater:theater?.current()||null})),'本楼创作规划','plan')});
-    theater=createTheater({getContext:ctx,getRequestHeaders,resolveRequest:args=>workbench.theaterRequest(args),save:()=>ctx().saveChat(),chatId,refresh,promptText,isAborted:()=>!!ctx().streamingProcessor?.abortController?.signal?.aborted,render:()=>plans.render()});
+    // The theater request preview replaces the planning preview in the panel until the next planning round.
+    theater=createTheater({getContext:ctx,getRequestHeaders,prepare:args=>workbench.theaterPrepare(args),save:()=>ctx().saveChat(),chatId,refresh,isAborted:()=>!!ctx().streamingProcessor?.abortController?.signal?.aborted,render:()=>plans.render(),onDiagnostics:d=>send('diagnostics',d)});
     const binding=createGenerationBinding({identity:chatId,isAborted:()=>!!ctx().streamingProcessor?.abortController?.signal?.aborted,discard:id=>plans.discard(id),bind:async(record,messageId)=>{
         const message=ctx().chat?.[messageId];if(!message)return;
         await plans.bind({requestId:record.requestId,messageId,swipeId:message.swipe_id??0});
