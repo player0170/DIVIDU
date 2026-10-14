@@ -17,7 +17,8 @@ const app=document.querySelector('#app'),tabs=document.querySelector('#tabs'),st
 function rpc(method,payload={}) {
     const requestId=createId();
     return new Promise((resolve,reject)=>{
-        const timer=setTimeout(()=>{pending.delete(requestId);reject(Error('酒馆响应超时，请刷新后重试。'));},30000);
+        // Loading every worldbook on first open can legitimately take a while on large setups.
+        const timer=setTimeout(()=>{pending.delete(requestId);reject(Error('酒馆响应超时，请刷新后重试。'));},60000);
         pending.set(requestId,{resolve,reject,timer});
         parent.postMessage({channel:CHANNEL,type:'request',requestId,method,payload},location.origin);
     });

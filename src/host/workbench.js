@@ -15,15 +15,18 @@ import { createCredentialStore } from './credential-store.js?v=0.5.0';
 import { profileRequest, authorizeLocalRequest } from '../planning/profiles.js?v=0.5.0';
 const ID = 'czgh_external_planner';
 export function createWorkbench({ context, headers, saveSettings, promptText }) {
-    let source;
+    // Source caches are separate so switching preset/entry switches reuses the captured preset data,
+    // while only world toggles reload the (potentially many) worldbooks.
+    let presetSource = null, worldSource = null;
     let bodyRequest = null; // Last body request seen on CHAT_COMPLETION_SETTINGS_READY, for the theater's "current connection".
     const vault = createCredentialStore();
     const parseYaml = text => globalThis.SillyTavern.libs?.yaml?.parse?.(text) ?? JSON.parse(text);
     const read = () => migrateSettings(migrateSchemes(context().extensionSettings[ID]));
+    // Panel toggles must not block the UI on a full settings write; ST's debounced save is enough here.
     const write = async value => {
         context().extensionSettings[ID] = value;
-        if (saveSettings) await saveSettings();
-        else context().saveSettingsDebounced();
+        if (context().saveSettingsDebounced) context().saveSettingsDebounced();
+        else if (saveSettings) await saveSettings();
     };
     const external = () => {
         const store = context().extensionSettings.preset_compare_api_manager;
@@ -53,11 +56,24 @@ export function createWorkbench({ context, headers, saveSettings, promptText }) 
         const manager = c.getPresetManager?.('openai') || (await import('/scripts/preset-manager.js')).getPresetManager('openai');
         return captureSources({ context, world, manager, openai: { oai_settings: c.chatCompletionSettings }, powerUser: c.powerUserSettings, baiBai: globalThis.STBaiBaiBook, promptText }, { signal, extraBooks, generationType, replaceMes });
     }
+    // Preset, entry and book switches are applied from the cached snapshot during the scan; only adding or
+    // removing an extra book changes what has to be loaded, so only then is the worldbook cache reloaded.
+    async function resolveSource(selection) {
+        const capturePresets = !presetSource;
+        const captureWorld = capturePresets || !worldSource;
+        if (!capturePresets && !captureWorld) return { ...presetSource, ...worldSource };
+        const fresh = await capture(undefined, captureWorld ? selection.extraBooks : []);
+        if (captureWorld) worldSource = fresh;
+        if (capturePresets) presetSource = fresh;
+        // The freshly captured half is always at least as new as the other; let it win the shared fields.
+        return { ...presetSource, ...worldSource };
+    }
     // The post-body stage shares world/compatibility selection with planning but has its own preset and entry switches.
     const theaterSelection = state => ({ ...state.selection, ...state.theaterSelection });
     async function snapshot(refresh = false) {
         const settings = read();
-        if (!source || refresh) source = await capture(undefined, settings.selection.extraBooks);
+        if (refresh) presetSource = worldSource = null;
+        const source = await resolveSource(settings.selection);
         let preset = null, error = '', theaterPreset = null, theaterError = '';
         try { preset = resolvePreset(source, settings.selection); } catch (e) { error = e.message; }
         try { theaterPreset = resolvePreset(source, settings.theaterSelection); } catch (e) { theaterError = e.message; }
@@ -66,6 +82,8 @@ export function createWorkbench({ context, headers, saveSettings, promptText }) 
     }
     return {
         snapshot,
+        // Chat changes invalidate the per-chat world/character/preset capture so the next read reloads it.
+        invalidate() { presetSource = worldSource = null; },
         async execute(method, payload = {}) {
             const state = read();
             if (method === 'state.read' || method === 'sources.refresh') return snapshot(true);
@@ -85,7 +103,10 @@ export function createWorkbench({ context, headers, saveSettings, promptText }) 
                 }
                 if (typeof payload.presetId === 'string') target.presetId = payload.presetId;
                 if (!theater) for (const key of ['extraBooks','compatibilityIds']) if (Array.isArray(payload[key]) && payload[key].every(v => typeof v === 'string')) state.selection[key] = [...new Set(payload[key])];
-                await write(state); source = null;
+                // Preset/entry/group switches only change the selection, which is applied from the cached
+                // snapshot; only adding or removing an extra book changes which worldbooks must be loaded.
+                if (!theater && Array.isArray(payload.extraBooks)) worldSource = null;
+                await write(state);
             } else if (method === 'api.save') {
                 let base = {};
                 if (payload.sourceId && !(payload.key && payload.apiUrl && payload.sourceId === 'current')) base = await api.resolve(payload.sourceId);
@@ -99,7 +120,7 @@ export function createWorkbench({ context, headers, saveSettings, promptText }) 
             else if (method === 'api.models') return api.models(await api.resolve(state.apiSelection));
             else if (method === 'scheme.loadCurrent') {
                 if (!['preset','world','theater'].includes(payload.kind)) throw new Error('无效方案类型。');
-                const fresh = await capture(undefined, []);
+                const fresh = await capture(undefined, state.selection.extraBooks);
                 if (payload.kind !== 'world') {
                     const native = resolvePreset(fresh, { presetId: fresh.currentPreset }), target = selectionOf(state, payload.kind);
                     target.presetId = fresh.currentPreset;
@@ -111,7 +132,9 @@ export function createWorkbench({ context, headers, saveSettings, promptText }) 
                     state.selection.extraBooks = [];
                 }
                 rememberScheme(state, payload.kind, '@current');
-                await write(state); source = fresh;
+                // The capture above is the current baseline for every selection; refresh both caches.
+                presetSource = fresh; worldSource = fresh;
+                await write(state);
             } else if (method === 'scheme.save') {
                 if (!['preset','world','theater'].includes(payload.kind)) throw new Error('无效方案类型。');
                 const list = listKind(payload.kind), target = selectionOf(state, payload.kind);
@@ -121,11 +144,13 @@ export function createWorkbench({ context, headers, saveSettings, promptText }) 
                     if (!item) throw new Error('方案已不存在。');
                     for (const key of keys) target[key] = structuredClone(item.payload[key]);
                     rememberScheme(state, payload.kind, payload.applyId);
-                    await write(state); source = null;
+                    // Applying a world scheme can change the extra books; presets themselves never change here.
+                    if (payload.kind === 'world') worldSource = null;
+                    await write(state);
                 } else {
                     const next = applySchemeOperation(state, { kind: list, operation: payload.id ? 'overwrite' : 'create', id: payload.id, name: payload.name, payload: Object.fromEntries(keys.map(k => [k, target[k]])) });
                     rememberScheme(next, payload.kind, payload.id || next.schemes[list].at(-1).id);
-                    await write(next); source = null;
+                    await write(next);
                 }
             } else if (method === 'scheme.remove') await write(applySchemeOperation(state, { kind: listKind(payload.kind), operation: 'delete', id: payload.id }));
             return snapshot();

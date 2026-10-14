@@ -7,7 +7,7 @@ import { createMessagePlans } from './message-plans.js?v=0.5.0';
 import { createGenerationBinding } from './generation-binding.js?v=0.5.0';
 import { createTheater } from './theater.js?v=0.5.0';
 import { migrateSchemes } from '../planning/schemes.js?v=0.5.0';
-import { CHANNEL, acceptsMessage, validateRpc, themeSnapshot } from '../bridge/protocol.js?v=0.5.0';
+import { CHANNEL, THEME_KEYS, acceptsMessage, validateRpc, themeSnapshot } from '../bridge/protocol.js?v=0.5.0';
 const ID='czgh_external_planner';
 const ctx=()=>SillyTavern.getContext();
 const chatId=()=>JSON.stringify([ctx().chatId,ctx().characterId,ctx().groupId]);
@@ -17,10 +17,16 @@ function init(){
     const menu=document.querySelector('#extensions_menu')||document.querySelector('#extensionsMenu');if(!menu)return;initialized=true;
     const dialog=document.createElement('dialog');dialog.id='czgh-planner-container';dialog.setAttribute('aria-label','创作规划');
     for(const [key,value] of Object.entries({padding:'0',margin:'auto',border:'0',background:'transparent',width:'min(460px,96vw)',height:'min(840px,92dvh)','max-width':'96vw','max-height':'92dvh',overflow:'hidden','box-shadow':'0 24px 80px #101d3540, 0 4px 16px #101d351f','border-radius':'14px','clip-path':'inset(0 round 14px)',transform:'none'}))dialog.style.setProperty(key,value,'important');
-    const frame=document.createElement('iframe');frame.title='创作规划';frame.src=new URL('../ui/index.html?v=0.5.0',import.meta.url).href;
+    const frame=document.createElement('iframe');frame.title='创作规划';
     frame.style.cssText='display:block!important;width:100%!important;height:100%!important;border:0!important;margin:0!important;padding:0!important;background:transparent!important;border-radius:14px!important;clip-path:inset(0 round 14px)!important;';dialog.append(frame);document.body.append(dialog);attachPanelInteractions(dialog);
+    // The panel document (and its first source capture) is loaded only when the menu is first opened.
+    // Loading it eagerly on every page start made SillyTavern itself open slowly.
+    let panelLoaded=false;
+    const loadPanel=()=>{if(panelLoaded)return;panelLoaded=true;frame.src=new URL('../ui/index.html?v=0.5.0',import.meta.url).href;};
     const send=(type,payload)=>frame.contentWindow?.postMessage({channel:CHANNEL,type,payload},location.origin);
-    const theme=()=>themeSnapshot(getComputedStyle(document.body));
+    // Cache the live computed style once; re-reading it on every poll is what made the panel feel heavy.
+    const bodyStyle=getComputedStyle(document.body);
+    const theme=(style)=>themeSnapshot(style||bodyStyle);
     // ST's own regex scripts, prompt side, so the planner and theater see the same history the body request does.
     let regexEngine;const promptText=async(text,message,depth)=>{regexEngine??=await import('/scripts/extensions/regex/engine.js').catch(()=>({}));if(typeof regexEngine.getRegexedString!=='function')return text;try{return regexEngine.getRegexedString(text,message?.is_user?regexEngine.regex_placement.USER_INPUT:regexEngine.regex_placement.AI_OUTPUT,{isPrompt:true,depth});}catch{return text;}};
     const workbench=createWorkbench({context:ctx,headers:getRequestHeaders,saveSettings,promptText});
@@ -61,12 +67,14 @@ function init(){
         const knownFrame=acceptsMessage(event,frame.contentWindow,location.origin)||allFrames().some(item=>acceptsMessage(event,item.frame.contentWindow,location.origin));
         if(knownFrame&&event.data.type==='resume'){const item=[...panelFrames.values()].find(x=>x.frame.contentWindow===event.source);if(!item||(item.record.phase==='awaiting'&&item.record.chatId===chatId()))planner.resume();return;}
         if(knownFrame&&event.data.type==='theater.generate'){const item=[...panelFrames.values()].find(x=>x.frame.contentWindow===event.source);const t=item?.record.theater;if(t&&t.chatId===chatId()&&!theater.busy(t.phase))void theater.generate(t.messageId);else theater.render();return;}
+        // Appearance is a local view toggle: apply it immediately and let ST's debounced save persist it.
+        // Waiting behind the heavy RPC queue (and a full settings write) was the day/night delay.
         if(knownFrame&&event.data.type==='appearance'){
-            rpcQueue=rpcQueue.then(async()=>{
-                const mode={auto:'light',light:'dark',dark:'auto'}[ctx().extensionSettings[ID]?.appearance||'auto'];
-                ctx().extensionSettings[ID].appearance=mode;await saveSettings();send('appearance',mode);
-                for(const item of allFrames())item.frame.contentWindow?.postMessage({channel:CHANNEL,type:'appearance',payload:mode},location.origin);
-            }).catch(error=>send('state',{...planner.getState(),status:error.message}));return;
+            const mode={auto:'light',light:'dark',dark:'auto'}[ctx().extensionSettings[ID]?.appearance||'auto'];
+            ctx().extensionSettings[ID].appearance=mode;ctx().saveSettingsDebounced?.();
+            send('appearance',mode);
+            for(const item of allFrames())item.frame.contentWindow?.postMessage({channel:CHANNEL,type:'appearance',payload:mode},location.origin);
+            return;
         }
         // Closing must not wait for source loading or any pending RPC operation.
         if(acceptsMessage(event,frame.contentWindow,location.origin)&&event.data.type==='close'){dialog.close();return;}
@@ -86,12 +94,18 @@ function init(){
                 if(method==='ui.close'){dialog.close();result={};}
                 else if(method==='planner.cancel'){planner.stop();binding.stopped();result={};}
                 else{result=await workbench.execute(method,payload);planner.settingsChanged();theater.settingsChanged();plans.render();}
-                frame.contentWindow?.postMessage({channel:CHANNEL,type:'response',requestId,ok:true,result},location.origin);send('theme',theme());send('state',{...planner.getState(),busy:planner.isPlanning()});
+                frame.contentWindow?.postMessage({channel:CHANNEL,type:'response',requestId,ok:true,result},location.origin);send('theme',theme());
+                // While planning, getState() serializes the whole chat to detect edits; skip that redundant send.
+                if(!planner.isPlanning())send('state',{...planner.getState(),busy:false});
             }catch(error){frame.contentWindow?.postMessage({channel:CHANNEL,type:'response',requestId,ok:false,error:error.message},location.origin);}
         });
     });
+    // The panel document only exists after the first open; sync theme/state/diagnostics once it loads.
+    frame.addEventListener('load',()=>{send('theme',theme());send('state',{...planner.getState(),busy:planner.isPlanning()});send('diagnostics',planner.getDiagnostics());});
     const button=document.createElement('button');button.id='czgh-planner-menu';button.type='button';button.className='list-group-item flex-container flexGap5 interactable';button.textContent='✎ 创作规划';
-    button.addEventListener('click',()=>{if(!dialog.open)dialog.showModal();send('theme',theme());send('refresh');send('diagnostics',planner.getDiagnostics());});menu.append(button);
+    // Opening reuses the sources already captured (once, on first load/chat change); a forced recapture here
+    // reloaded every worldbook on each open, which is what made the panel feel slow to start.
+    button.addEventListener('click',()=>{loadPanel();if(!dialog.open)dialog.showModal();send('theme',theme());send('state',{...planner.getState(),busy:planner.isPlanning()});send('diagnostics',planner.getDiagnostics());});menu.append(button);
     const on=(name,fn)=>{if(ctx().eventTypes[name])ctx().eventSource.on(ctx().eventTypes[name],fn);};
     const announceUser=id=>{
         const message=ctx().chat?.[id];
@@ -114,10 +128,10 @@ function init(){
     on('GENERATION_STARTED',(type,_options,dryRun)=>{busy=true;send('state',{...planner.getState(),busy:planner.isPlanning()});binding.started();theater.generationStarted(type,dryRun);});
     on('GENERATION_STOPPED',()=>{busy=false;send('state',{...planner.getState(),busy:planner.isPlanning()});binding.stopped();plans.settleWaiting('cancelled');});
     on('GENERATION_ENDED',()=>{busy=false;send('state',{...planner.getState(),busy:planner.isPlanning()});binding.ended();plans.settleWaiting('skipped');plans.render();});
-    on('CHAT_CHANGED',()=>{binding.stopped();plans.dispose();plans.render();theater.chatChanged();if(dialog.open)send('refresh');});
+    on('CHAT_CHANGED',()=>{binding.stopped();plans.dispose();plans.render();theater.chatChanged();workbench.invalidate();if(dialog.open)send('refresh');});
     on('MESSAGE_SWIPED',()=>{plans.clearLive();});
     for(const event of ['CHARACTER_MESSAGE_RENDERED','MESSAGE_UPDATED','MESSAGE_EDITED','MESSAGE_DELETED','CHAT_LOADED'])on(event,()=>plans.render());
-    let previous='';setInterval(()=>{const value=theme(),json=JSON.stringify(value);if(json===previous)return;previous=json;if(dialog.open)send('theme',value);for(const item of allFrames())item.frame.contentWindow?.postMessage({channel:CHANNEL,type:'theme',payload:value},location.origin);},800);
+    let previous='';setInterval(()=>{const value=theme(),json=THEME_KEYS.map(key=>value[key]).join('\u0000');if(json===previous)return;previous=json;if(dialog.open)send('theme',value);for(const item of allFrames())item.frame.contentWindow?.postMessage({channel:CHANNEL,type:'theme',payload:value},location.origin);},800);
     plans.render();
 }
 ctx().eventSource.on(ctx().eventTypes.APP_READY,init);init();
