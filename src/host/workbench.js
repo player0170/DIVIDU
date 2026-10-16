@@ -164,6 +164,14 @@ export function createWorkbench({ context, headers, saveSettings, promptText }) 
         async theaterPrepare({ messageId, body, config, signal }) {
             const state = migrateSchemes(config);
             const selection = theaterSelection(state);
+            // Group chat: reuse the connection of the body request just sent (captured by rememberBodyRequest)
+            // and append the theater prompt to the body's own messages; do not rebuild the independent context.
+            if (context().groupId) {
+                signal.throwIfAborted();
+                const history = context().chat.slice(0, messageId + 1).map((m, i) => ({ role: m.is_user ? 'user' : 'assistant', content: i === messageId ? body : (m.mes ?? '') }));
+                const request = await this.theaterRequest({ selection: state.theaterApiSelection, maxTokens: config.theaterMaxTokens, signal });
+                return { messages: theaterMessages(history, config), request, sourceManifest: null };
+            }
             const frozen = await capture(signal, state.selection.extraBooks, 'theater', { index: messageId, mes: body });
             const snapshotData = await materializePluginMacros(frozen, selection, globalThis.STBaiBaiBook);
             await captureHelperVariables(snapshotData, context(), globalThis.TavernHelper, 'theater');
@@ -205,6 +213,22 @@ export function createWorkbench({ context, headers, saveSettings, promptText }) 
                 const response=await fetch('/api/secrets/read',{method:'POST',headers:headers(),body:'{}',signal});
                 if(!response.ok)throw Error('无法冻结当前连接的密钥引用。');
                 currentRequest=freezeCurrentRequest(data,await response.json(),text=>globalThis.SillyTavern.libs?.yaml?.parse?.(text)??JSON.parse(text));
+            }
+            // Group chat: the independent context assembly is unverified for speaker rotation.
+            // Reuse the request already assembled by SillyTavern (same as the 0.1.0 behavior)
+            // so group chat keeps working while the independent preset/worldbook scan stays off.
+            if (context().groupId) {
+                signal.throwIfAborted();
+                if (state.apiSelection === 'current') {
+                    return { messages: data.messages, request: currentRequest };
+                }
+                const profile = await api.resolve(state.apiSelection);
+                if (profile.keyRef) {
+                    const request = authorizeLocalRequest(profileRequest(profile, [], config.maxTokens, parseYaml), await vault.get(profile.keyRef), parseYaml);
+                    return { messages: data.messages, request };
+                }
+                if (!profile.secretId) throw new Error('此方案尚无可用密钥引用，请选择已保存的 API 方案。');
+                return { messages: data.messages, profile };
             }
             const frozen = await capture(signal, state.selection.extraBooks, data.type);
             const snapshotData = await materializePluginMacros(frozen,state.selection,globalThis.STBaiBaiBook);
